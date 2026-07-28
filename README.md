@@ -1,5 +1,7 @@
 # 로그 분석 도구 (Log Analyzer)
 
+[![CI](https://github.com/yoopeace/log-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/yoopeace/log-analyzer/actions/workflows/ci.yml)
+
 ## 개요
 
 Python으로 개발한 보안 로그 분석 도구.
@@ -51,9 +53,21 @@ IP별 로그인 실패 횟수:
 
 ## 테스트
 
+pytest 설치 후 전체 테스트(30건) 실행:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install pytest
+.venv/bin/pytest
+```
+
+pytest 없이 표준 라이브러리만으로 실행:
+
 ```bash
 python3 -m unittest test_log_analyzer
 ```
+
+`main` 브랜치에 push하거나 PR을 올리면 GitHub Actions에서 테스트가 자동 실행됨.
 
 ## 기술 스택
 
