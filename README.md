@@ -53,7 +53,7 @@ IP별 로그인 실패 횟수:
 
 ## 테스트
 
-pytest 설치 후 전체 테스트(30건) 실행:
+전체 테스트(30건 = pytest 12건 + unittest 18건) 실행:
 
 ```bash
 python3 -m venv .venv
@@ -61,11 +61,13 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
-pytest 없이 표준 라이브러리만으로 실행:
+pytest 없이 실행 (unittest 18건만 해당):
 
 ```bash
 python3 -m unittest test_log_analyzer
 ```
+
+`test_detection.py`는 pytest 기능을 사용하므로 pytest로만 실행됨.
 
 `main` 브랜치에 push하거나 PR을 올리면 GitHub Actions에서 테스트가 자동 실행됨.
 
