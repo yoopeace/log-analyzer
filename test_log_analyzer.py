@@ -43,10 +43,10 @@ class TestOpenLog(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_파일이_없으면_종료코드_1로_종료(self):
+    def test_파일이_없으면_입력오류_종료코드로_종료(self):
         with self.assertRaises(SystemExit) as ctx:
             open_log('/no/such/file.log')
-        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(ctx.exception.code, 2)
 
 
 class TestExtractField(unittest.TestCase):
@@ -111,6 +111,16 @@ class TestScanLog(unittest.TestCase):
 
     def test_일반_파일은_무시(self):
         _, file_alerts = scan_log(iter(["FILE_ACCESS file=/home/user/memo.txt user=admin\n"]))
+        self.assertEqual(file_alerts, [])
+
+    def test_NOT_LOGIN_FAIL을_로그인_실패로_착각하지_않음(self):
+        logs = iter(["INFO message=NOT_LOGIN_FAIL ip=1.2.3.4\n"])
+        suspicious, _ = scan_log(logs)
+        self.assertEqual(suspicious, [])
+
+    def test_profile_필드를_민감파일_접근으로_착각하지_않음(self):
+        logs = iter(["FILE_ACCESS profile=/etc/passwd user=x\n"])
+        _, file_alerts = scan_log(logs)
         self.assertEqual(file_alerts, [])
 
     def test_제어문자가_섞인_줄도_새니타이즈되어_처리(self):

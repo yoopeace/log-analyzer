@@ -26,6 +26,16 @@ def test_찾는_항목이_없으면_None을_돌려준다():
     assert extract_field(line, 'ip') is None
 
 
+def test_client_ip를_ip로_착각하지_않는다():
+    # 'client_ip=' 안에 'ip=' 가 들어 있지만 다른 항목이다
+    assert extract_field("LOGIN_FAIL client_ip=10.0.0.5", 'ip') is None
+
+
+def test_profile을_file로_착각하지_않는다():
+    # 'profile=' 안에 'file=' 가 들어 있지만 다른 항목이다
+    assert extract_field("FILE_ACCESS profile=/etc/passwd", 'file') is None
+
+
 def test_빈_문자열을_넣어도_터지지_않는다():
     assert extract_field("", 'ip') is None
 
