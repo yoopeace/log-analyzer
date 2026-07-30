@@ -76,3 +76,65 @@ def test_로그_파일이_없으면_종료코드_2(tmp_path):
 
     assert result.returncode == 2
     assert "찾을 수 없습니다" in result.stdout
+
+
+# ─────────────────────────────────────────
+# 시간 창 옵션
+# ─────────────────────────────────────────
+
+def test_기간을_두고_흩어진_실패는_탐지하지_않는다(tmp_path):
+    log = tmp_path / "spread.log"
+    log.write_text(
+        "2024-01-15 09:00:00 LOGIN_FAIL user=root ip=10.0.0.5\n"
+        "2024-03-20 14:00:00 LOGIN_FAIL user=root ip=10.0.0.5\n"
+        "2024-07-02 21:00:00 LOGIN_FAIL user=root ip=10.0.0.5\n"
+    )
+
+    result = run(str(log), "--output", str(tmp_path / "r.txt"))
+
+    assert result.returncode == 0, "오랜 기간에 흩어진 실패를 브루트포스로 오판함"
+    assert "이상 없음" in result.stdout
+
+
+def test_window_minutes_옵션으로_창을_넓히면_탐지된다(tmp_path):
+    log = tmp_path / "slow.log"
+    log.write_text(
+        "2024-01-15 09:00:00 LOGIN_FAIL user=root ip=10.0.0.5\n"
+        "2024-01-15 09:20:00 LOGIN_FAIL user=root ip=10.0.0.5\n"
+        "2024-01-15 09:40:00 LOGIN_FAIL user=root ip=10.0.0.5\n"
+    )
+    report = str(tmp_path / "r.txt")
+
+    # 기본 창(10분)에서는 탐지되지 않는다
+    assert run(str(log), "--output", report).returncode == 0
+    # 창을 60분으로 넓히면 탐지된다
+    assert run(str(log), "--output", report, "--window-minutes", "60").returncode == 1
+
+
+def test_threshold_옵션으로_기준치를_바꿀_수_있다(tmp_path):
+    log = tmp_path / "two.log"
+    log.write_text(
+        "2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5\n"
+        "2024-01-15 09:25:02 LOGIN_FAIL user=root ip=10.0.0.5\n"
+    )
+    report = str(tmp_path / "r.txt")
+
+    assert run(str(log), "--output", report).returncode == 0
+    assert run(str(log), "--output", report, "--threshold", "2").returncode == 1
+
+
+def test_잘못된_옵션값은_거부한다(tmp_path):
+    log = tmp_path / "a.log"
+    log.write_text("2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5\n")
+
+    assert run(str(log), "--threshold", "0").returncode == 2
+    assert run(str(log), "--window-minutes", "-5").returncode == 2
+
+
+def test_시각을_못_읽은_실패는_보고서에_별도_표기한다(tmp_path):
+    log = tmp_path / "undated.log"
+    log.write_text("LOGIN_FAIL user=root ip=10.0.0.5\n")
+
+    result = run(str(log), "--output", str(tmp_path / "r.txt"))
+
+    assert "시각을 읽을 수 없어" in result.stdout

@@ -4,7 +4,22 @@ extract_field → count_by_ip → detect_bruteforce 순서로
 로그 한 줄에서 IP를 뽑아 집계하고 공격 여부를 판정한다.
 """
 
-from log_analyzer import THRESHOLD, count_by_ip, detect_bruteforce, extract_field
+from datetime import datetime
+
+from log_analyzer import (
+    THRESHOLD,
+    WINDOW_MINUTES,
+    count_by_ip,
+    count_undated,
+    detect_bruteforce,
+    extract_field,
+    parse_timestamp,
+)
+
+
+def ts(text):
+    """테스트에서 시각을 짧게 쓰기 위한 도우미."""
+    return datetime.strptime(text, '%Y-%m-%d %H:%M:%S')
 
 
 # ─────────────────────────────────────────
@@ -49,20 +64,17 @@ def test_등호_뒤에_값이_없으면_None을_돌려준다():
 # ─────────────────────────────────────────
 
 def test_IP별로_실패_횟수를_센다():
-    logs = [
-        "LOGIN_FAIL user=root ip=10.0.0.5",
-        "LOGIN_FAIL user=root ip=10.0.0.5",
-        "LOGIN_FAIL user=john ip=172.16.0.99",
+    events = [
+        (ts("2024-01-15 09:25:01"), '10.0.0.5'),
+        (ts("2024-01-15 09:25:02"), '10.0.0.5'),
+        (ts("2024-01-15 09:31:10"), '172.16.0.99'),
     ]
-    assert count_by_ip(logs) == {'10.0.0.5': 2, '172.16.0.99': 1}
+    assert count_by_ip(events) == {'10.0.0.5': 2, '172.16.0.99': 1}
 
 
-def test_IP가_없는_줄은_세지_않고_건너뛴다():
-    logs = [
-        "LOGIN_FAIL user=root ip=10.0.0.5",
-        "LOGIN_FAIL user=root",
-    ]
-    assert count_by_ip(logs) == {'10.0.0.5': 1}
+def test_시각을_못_읽은_줄도_총계에는_포함한다():
+    events = [(None, '10.0.0.5'), (ts("2024-01-15 09:25:01"), '10.0.0.5')]
+    assert count_by_ip(events) == {'10.0.0.5': 2}
 
 
 def test_로그가_하나도_없으면_빈_결과를_돌려준다():
@@ -70,22 +82,126 @@ def test_로그가_하나도_없으면_빈_결과를_돌려준다():
 
 
 # ─────────────────────────────────────────
-# 3. detect_bruteforce: 공격 여부 판정
+# 3. parse_timestamp: 줄 앞머리의 시각 읽기
 # ─────────────────────────────────────────
 
-def test_기준치를_넘으면_경고를_만든다():
-    alerts = detect_bruteforce({'10.0.0.5': 5})
+def test_표준_형식의_시각을_읽는다():
+    line = "2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5"
+    assert parse_timestamp(line) == ts("2024-01-15 09:25:01")
+
+
+def test_ISO_형식의_T_구분자도_읽는다():
+    assert parse_timestamp("2024-01-15T09:25:01 LOGIN_FAIL") == ts("2024-01-15 09:25:01")
+
+
+def test_시각이_없는_줄은_None을_돌려준다():
+    assert parse_timestamp("LOGIN_FAIL user=root ip=10.0.0.5") is None
+
+
+def test_존재하지_않는_날짜는_None을_돌려준다():
+    # 형식은 맞지만 2월 30일은 없는 날짜다
+    assert parse_timestamp("2024-02-30 09:25:01 LOGIN_FAIL") is None
+
+
+# ─────────────────────────────────────────
+# 4. detect_bruteforce: 시간 창 기반 판정
+# ─────────────────────────────────────────
+
+def test_짧은_시간에_몰린_실패는_경고한다():
+    events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 4)]
+    alerts = detect_bruteforce(events, threshold=3, window_minutes=10)
     assert len(alerts) == 1
     assert '10.0.0.5' in alerts[0]
 
 
+def test_기간을_두고_흩어진_실패는_경고하지_않는다():
+    # 같은 IP가 세 달에 걸쳐 한 번씩 실패한 경우
+    events = [
+        (ts("2024-01-15 09:00:00"), '10.0.0.5'),
+        (ts("2024-03-20 14:00:00"), '10.0.0.5'),
+        (ts("2024-07-02 21:00:00"), '10.0.0.5'),
+    ]
+    assert detect_bruteforce(events, threshold=3, window_minutes=10) == []
+
+
+def test_창_경계에_걸친_실패는_창_안으로_인정한다():
+    # 정확히 10분 간격이면 창(10분) 안에 포함된다
+    events = [
+        (ts("2024-01-15 09:00:00"), '10.0.0.5'),
+        (ts("2024-01-15 09:05:00"), '10.0.0.5'),
+        (ts("2024-01-15 09:10:00"), '10.0.0.5'),
+    ]
+    assert len(detect_bruteforce(events, threshold=3, window_minutes=10)) == 1
+
+
+def test_창을_벗어난_실패는_세지_않는다():
+    # 첫 실패와 마지막 실패가 10분을 넘어 벌어져 있어 동시 3회가 되지 않는다
+    events = [
+        (ts("2024-01-15 09:00:00"), '10.0.0.5'),
+        (ts("2024-01-15 09:06:00"), '10.0.0.5'),
+        (ts("2024-01-15 09:12:00"), '10.0.0.5'),
+    ]
+    assert detect_bruteforce(events, threshold=3, window_minutes=10) == []
+
+
 def test_기준치보다_한_번_적으면_경고하지_않는다():
-    assert detect_bruteforce({'10.0.0.5': THRESHOLD - 1}) == []
+    events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, THRESHOLD)]
+    assert detect_bruteforce(events) == []
 
 
 def test_기준치와_정확히_같으면_경고한다():
-    assert len(detect_bruteforce({'10.0.0.5': THRESHOLD})) == 1
+    events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, THRESHOLD + 1)]
+    assert len(detect_bruteforce(events)) == 1
+
+
+def test_시각을_못_읽은_줄은_시간_창_판정에서_제외한다():
+    events = [(None, '10.0.0.5')] * 10
+    assert detect_bruteforce(events, threshold=3, window_minutes=10) == []
+
+
+def test_로그_순서가_뒤바뀌어_있어도_판정한다():
+    events = [
+        (ts("2024-01-15 09:25:03"), '10.0.0.5'),
+        (ts("2024-01-15 09:25:01"), '10.0.0.5'),
+        (ts("2024-01-15 09:25:02"), '10.0.0.5'),
+    ]
+    assert len(detect_bruteforce(events, threshold=3, window_minutes=10)) == 1
+
+
+def test_다른_IP의_실패는_합산하지_않는다():
+    events = [
+        (ts("2024-01-15 09:25:01"), '10.0.0.5'),
+        (ts("2024-01-15 09:25:02"), '10.0.0.6'),
+        (ts("2024-01-15 09:25:03"), '10.0.0.7'),
+    ]
+    assert detect_bruteforce(events, threshold=3, window_minutes=10) == []
 
 
 def test_집계_결과가_비어_있으면_경고하지_않는다():
-    assert detect_bruteforce({}) == []
+    assert detect_bruteforce([]) == []
+
+
+def test_경고에_창_기간과_시각_범위를_담는다():
+    events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 4)]
+    alert = detect_bruteforce(events, threshold=3, window_minutes=10)[0]
+    assert '10분' in alert
+    assert '3회' in alert
+    assert '09:25:01' in alert
+
+
+# ─────────────────────────────────────────
+# 5. count_undated: 시각을 못 읽은 건수
+# ─────────────────────────────────────────
+
+def test_시각을_못_읽은_건수를_센다():
+    events = [(None, '1.1.1.1'), (ts("2024-01-15 09:00:00"), '1.1.1.1'), (None, '2.2.2.2')]
+    assert count_undated(events) == 2
+
+
+def test_모두_시각을_읽었으면_0을_돌려준다():
+    assert count_undated([(ts("2024-01-15 09:00:00"), '1.1.1.1')]) == 0
+
+
+def test_기본_설정값이_정의되어_있다():
+    assert THRESHOLD == 3
+    assert WINDOW_MINUTES == 10

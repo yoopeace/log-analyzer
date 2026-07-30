@@ -1,10 +1,12 @@
 import argparse
 import re
 import sys
-from datetime import datetime
+from collections import deque
+from datetime import datetime, timedelta
 from pathlib import Path
 
-THRESHOLD = 3
+THRESHOLD = 3        # 창 안에서 이 횟수 이상 실패하면 브루트포스로 판정
+WINDOW_MINUTES = 10  # 판정에 쓰는 시간 창 (분)
 SENSITIVE_FILES = ['/etc/passwd', '/etc/shadow', '/etc/sudoers']
 
 # 종료 코드: 0 탐지 없음 / 1 탐지됨 / 2 입력 오류
@@ -34,6 +36,21 @@ def open_log(filename):
         print(f"❌ 로그 파일을 읽을 권한이 없습니다: {filename}")
         sys.exit(EXIT_INPUT_ERROR)
 
+
+# 줄 앞머리의 '2024-01-15 09:25:01' 또는 '2024-01-15T09:25:01' 형태
+TIMESTAMP = re.compile(r'^\s*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})')
+
+def parse_timestamp(line):
+    """줄 앞머리의 시각을 읽는다. 읽을 수 없으면 None."""
+    match = TIMESTAMP.match(line)
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(f"{match.group(1)} {match.group(2)}", '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        # 형식은 맞지만 2월 30일처럼 존재하지 않는 날짜인 경우
+        return None
+
 def extract_field(line, field):
     # (?<!\S): 항목 이름 앞이 공백이거나 줄 시작이어야 한다.
     # 이 조건이 없으면 'client_ip=' 의 'ip=' 나 'profile=' 의 'file=' 을 잘못 집어낸다.
@@ -42,8 +59,12 @@ def extract_field(line, field):
     return match.group(1) if match else None
 
 def scan_log(lines):
-    # 대용량 로그도 처리할 수 있도록 전체를 메모리에 올리지 않고 한 줄씩 한 번만 순회한다
-    suspicious = []
+    """로그를 한 줄씩 훑어 (시각, IP) 실패 이벤트와 민감파일 경고를 모은다.
+
+    대용량 로그도 처리할 수 있도록 전체를 메모리에 올리지 않고 한 번만 순회한다.
+    시각을 읽을 수 없는 줄은 시각을 None으로 담아 호출한 쪽이 판단하게 한다.
+    """
+    fail_events = []
     file_alerts = []
     for raw_line in lines:
         line = sanitize_line(raw_line)
@@ -51,27 +72,64 @@ def scan_log(lines):
         # 부분 문자열로 찾으면 'NOT_LOGIN_FAIL' 같은 값도 실패로 세게 된다.
         tokens = line.split()
         if 'LOGIN_FAIL' in tokens:
-            suspicious.append(line.strip())
+            ip = extract_field(line, 'ip')
+            if ip is not None:
+                fail_events.append((parse_timestamp(line), ip))
         if 'FILE_ACCESS' in tokens:
             accessed_file = extract_field(line, 'file')
             if accessed_file in SENSITIVE_FILES:
                 file_alerts.append(f"[경고] 민감파일 접근 - {line.strip()}")
-    return suspicious, file_alerts
+    return fail_events, file_alerts
 
-def count_by_ip(suspicious_logs):
+def count_by_ip(fail_events):
+    """IP별 총 실패 횟수. 시각을 못 읽은 건도 총계에는 포함한다."""
     ip_count = {}
-    for line in suspicious_logs:
-        ip = extract_field(line, 'ip')
-        if ip is None:
-            continue
+    for _, ip in fail_events:
         ip_count[ip] = ip_count.get(ip, 0) + 1
     return ip_count
 
-def detect_bruteforce(ip_count):
+def count_undated(fail_events):
+    """시각을 읽을 수 없어 시간 창 판정에서 빠지는 건수."""
+    return sum(1 for timestamp, _ in fail_events if timestamp is None)
+
+def detect_bruteforce(fail_events, threshold=THRESHOLD, window_minutes=WINDOW_MINUTES):
+    """같은 IP가 시간 창 안에서 기준치 이상 실패했는지 판정한다.
+
+    브루트포스는 '짧은 시간에 몰아서 시도한다'는 것이 본질이므로
+    전체 기간의 누적 횟수가 아니라 창 안의 최다 횟수를 기준으로 삼는다.
+    시각을 읽을 수 없는 이벤트는 창 판정에 쓸 수 없어 제외한다.
+    """
+    window = timedelta(minutes=window_minutes)
+
+    times_by_ip = {}
+    for timestamp, ip in fail_events:
+        if timestamp is None:
+            continue
+        times_by_ip.setdefault(ip, []).append(timestamp)
+
     alerts = []
-    for ip, count in ip_count.items():
-        if count >= THRESHOLD:
-            alerts.append(f"[경고] 브루트포스 의심 - IP: {ip} / 실패횟수: {count}회")
+    for ip, times in times_by_ip.items():
+        times.sort()   # 로그 순서가 뒤바뀌어 있어도 판정할 수 있게 정렬한다
+
+        # 창을 밀면서 동시에 창 안에 들어오는 최다 실패 횟수를 찾는다
+        recent = deque()
+        peak_count = 0
+        peak_range = None
+        for current in times:
+            recent.append(current)
+            while recent and current - recent[0] > window:
+                recent.popleft()
+            if len(recent) > peak_count:
+                peak_count = len(recent)
+                peak_range = (recent[0], current)
+
+        if peak_count >= threshold:
+            start, end = peak_range
+            alerts.append(
+                f"[경고] 브루트포스 의심 - IP: {ip} / "
+                f"{window_minutes}분 내 최다 {peak_count}회 "
+                f"({start.strftime('%Y-%m-%d %H:%M:%S')} ~ {end.strftime('%H:%M:%S')})"
+            )
     return alerts
 
 def format_ip_counts(ip_count):
@@ -85,12 +143,18 @@ def format_alerts(title, alerts):
     lines.extend(alerts if alerts else ["이상 없음"])
     return "\n".join(lines)
 
-def build_report_body(ip_count, brute_alerts, file_alerts):
-    return "\n\n".join([
+def build_report_body(ip_count, brute_alerts, file_alerts, undated_count=0):
+    sections = [
         format_ip_counts(ip_count),
         format_alerts("브루트포스 탐지 결과", brute_alerts),
         format_alerts("민감파일 접근 탐지 결과", file_alerts),
-    ])
+    ]
+    if undated_count:
+        # 조용히 버리지 않고 몇 건이 판정에서 빠졌는지 알려 사람이 판단하게 한다
+        sections.append(
+            f"※ 시각을 읽을 수 없어 시간 창 판정에서 제외된 로그인 실패: {undated_count}건"
+        )
+    return "\n\n".join(sections)
 
 def save_report(body, output_file):
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -106,18 +170,28 @@ def main():
     parser = argparse.ArgumentParser(description='로그 분석 도구')
     parser.add_argument('logfile', help='분석할 로그 파일 경로')
     parser.add_argument('--output', default='report.txt', help='보고서 저장 파일명')
+    parser.add_argument('--threshold', type=int, default=THRESHOLD,
+                        help=f'브루트포스 판정 기준 실패 횟수 (기본 {THRESHOLD}회)')
+    parser.add_argument('--window-minutes', type=int, default=WINDOW_MINUTES,
+                        help=f'판정에 쓰는 시간 창 (기본 {WINDOW_MINUTES}분)')
     args = parser.parse_args()
+
+    if args.threshold < 1:
+        parser.error("--threshold 는 1 이상이어야 합니다.")
+    if args.window_minutes < 1:
+        parser.error("--window-minutes 는 1 이상이어야 합니다.")
 
     # 분석 대상 로그를 보고서로 덮어쓰면 원본이 복구 불가능하게 사라진다
     if Path(args.logfile).resolve() == Path(args.output).resolve():
         parser.error("입력 로그와 출력 보고서는 서로 다른 파일이어야 합니다.")
 
     with open_log(args.logfile) as f:
-        suspicious, file_alerts = scan_log(f)
-    ip_count = count_by_ip(suspicious)
-    brute_alerts = detect_bruteforce(ip_count)
+        fail_events, file_alerts = scan_log(f)
+    ip_count = count_by_ip(fail_events)
+    brute_alerts = detect_bruteforce(fail_events, args.threshold, args.window_minutes)
 
-    body = build_report_body(ip_count, brute_alerts, file_alerts)
+    body = build_report_body(ip_count, brute_alerts, file_alerts,
+                             count_undated(fail_events))
     print(body)
     save_report(body, args.output)
 

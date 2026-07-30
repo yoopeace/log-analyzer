@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime
 
 from log_analyzer import (
     build_report_body,
@@ -69,41 +70,49 @@ class TestExtractField(unittest.TestCase):
 
 class TestCountByIp(unittest.TestCase):
     def test_IP별_집계(self):
-        logs = [
-            "LOGIN_FAIL user=root ip=10.0.0.5",
-            "LOGIN_FAIL user=root ip=10.0.0.5",
-            "LOGIN_FAIL user=john ip=172.16.0.99",
+        events = [
+            (datetime(2024, 1, 15, 9, 25, 1), '10.0.0.5'),
+            (datetime(2024, 1, 15, 9, 25, 2), '10.0.0.5'),
+            (datetime(2024, 1, 15, 9, 31, 10), '172.16.0.99'),
         ]
-        self.assertEqual(count_by_ip(logs), {'10.0.0.5': 2, '172.16.0.99': 1})
+        self.assertEqual(count_by_ip(events), {'10.0.0.5': 2, '172.16.0.99': 1})
 
-    def test_ip_필드가_없는_줄은_건너뜀(self):
-        logs = ["LOGIN_FAIL user=root"]
-        self.assertEqual(count_by_ip(logs), {})
+    def test_이벤트가_없으면_빈_집계(self):
+        self.assertEqual(count_by_ip([]), {})
 
 
 class TestDetectBruteforce(unittest.TestCase):
-    def test_임계값_이상이면_경고(self):
-        alerts = detect_bruteforce({'10.0.0.5': 3})
+    def test_임계값_이상이_창_안에_몰리면_경고(self):
+        events = [(datetime(2024, 1, 15, 9, 25, s), '10.0.0.5') for s in (1, 2, 3)]
+        alerts = detect_bruteforce(events)
         self.assertEqual(len(alerts), 1)
         self.assertIn('10.0.0.5', alerts[0])
         self.assertIn('3회', alerts[0])
 
     def test_임계값_미만이면_경고_없음(self):
-        self.assertEqual(detect_bruteforce({'10.0.0.5': 2}), [])
+        events = [(datetime(2024, 1, 15, 9, 25, s), '10.0.0.5') for s in (1, 2)]
+        self.assertEqual(detect_bruteforce(events), [])
 
 
 class TestScanLog(unittest.TestCase):
-    def test_한_번의_순회로_의심줄과_민감파일_경고를_모두_수집(self):
+    def test_한_번의_순회로_실패이벤트와_민감파일_경고를_모두_수집(self):
         # iter()로 감싸 한 번만 순회 가능한 스트림임을 보장 (파일 객체와 동일한 조건)
         lines = iter([
-            "LOGIN_SUCCESS user=admin ip=192.168.1.10\n",
-            "LOGIN_FAIL user=root ip=10.0.0.5\n",
+            "2024-01-15 09:23:11 LOGIN_SUCCESS user=admin ip=192.168.1.10\n",
+            "2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5\n",
             "2024-01-15 09:24:33 FILE_ACCESS file=/etc/passwd user=admin\n",
         ])
-        suspicious, file_alerts = scan_log(lines)
-        self.assertEqual(suspicious, ["LOGIN_FAIL user=root ip=10.0.0.5"])
+        fail_events, file_alerts = scan_log(lines)
+        self.assertEqual(
+            fail_events,
+            [(datetime(2024, 1, 15, 9, 25, 1), '10.0.0.5')],
+        )
         self.assertEqual(len(file_alerts), 1)
         self.assertIn('/etc/passwd', file_alerts[0])
+
+    def test_시각이_없는_실패줄은_시각을_None으로_담는다(self):
+        fail_events, _ = scan_log(iter(["LOGIN_FAIL user=root ip=10.0.0.5\n"]))
+        self.assertEqual(fail_events, [(None, '10.0.0.5')])
 
     def test_유사한_경로는_오탐하지_않음(self):
         _, file_alerts = scan_log(iter(["FILE_ACCESS file=/etc/passwd.bak user=admin\n"]))
@@ -124,10 +133,10 @@ class TestScanLog(unittest.TestCase):
         self.assertEqual(file_alerts, [])
 
     def test_제어문자가_섞인_줄도_새니타이즈되어_처리(self):
-        suspicious, _ = scan_log(iter(["\x1b[31mLOGIN_FAIL\x1b[0m user=root ip=10.0.0.5\n"]))
-        self.assertEqual(len(suspicious), 1)
-        self.assertNotIn('\x1b', suspicious[0])
-        self.assertEqual(extract_field(suspicious[0], 'ip'), '10.0.0.5')
+        # ANSI 색상 코드로 이벤트 이름을 감싸 탐지를 피하려는 경우
+        lines = iter(["2024-01-15 09:25:01 \x1b[31mLOGIN_FAIL\x1b[0m user=root ip=10.0.0.5\n"])
+        fail_events, _ = scan_log(lines)
+        self.assertEqual(fail_events, [(datetime(2024, 1, 15, 9, 25, 1), '10.0.0.5')])
 
 
 class TestBuildReportBody(unittest.TestCase):
