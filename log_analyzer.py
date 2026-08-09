@@ -5,7 +5,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
-THRESHOLD = 5        # 창 안에서 이 횟수 이상 실패하면 브루트포스로 판정
+THRESHOLD = 6  # 정상 사용자의 10분 내 최대 실패(5회)보다 1 높게 설정
 WINDOW_MINUTES = 10  # 판정에 쓰는 시간 창 (분)
 SENSITIVE_FILES = ['/etc/passwd', '/etc/shadow', '/etc/sudoers']
 
