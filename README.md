@@ -9,7 +9,7 @@ Python으로 개발한 보안 로그 분석 도구.
 
 ## 주요 기능
 
-- 시간 창 기반 브루트포스 탐지 (기본: 10분 내 3회 이상 실패)
+- 시간 창 기반 브루트포스 탐지 (기본: 10분 내 5회 이상 실패)
 - 로그인 실패 횟수를 IP별로 집계
 - `/etc/passwd` 등 민감파일 접근 탐지 (정확한 경로 일치 기준)
 - 분석 결과를 보고서 파일로 저장
@@ -25,7 +25,7 @@ python3 log_analyzer.py [로그파일] --output [보고서파일명]
 | 옵션 | 기본값 | 설명 |
 |------|--------|------|
 | `--output` | `report.txt` | 보고서 저장 파일명 |
-| `--threshold` | `3` | 브루트포스 판정 기준 실패 횟수 |
+| `--threshold` | `5` | 브루트포스 판정 기준 실패 횟수 |
 | `--window-minutes` | `10` | 판정에 쓰는 시간 창 (분) |
 
 ## 사용 예시
@@ -35,10 +35,10 @@ python3 log_analyzer.py sample.log
 python3 log_analyzer.py sample.log --output result.txt
 ```
 
-10분 내 5회 이상으로 기준을 높이려면:
+기준을 더 엄격하게 (10분 내 3회 이상) 설정하려면:
 
 ```bash
-python3 log_analyzer.py access.log --threshold 5 --window-minutes 10
+python3 log_analyzer.py access.log --threshold 3 --window-minutes 10
 ```
 
 ## 탐지 방식
@@ -124,7 +124,7 @@ python3 -m unittest test_log_analyzer
 
 | 공격 유형 | 탐지 방법 |
 |----------|----------|
-| 브루트포스 | 동일 IP가 시간 창(기본 10분) 안에서 기준치(기본 3회) 이상 로그인 실패 |
+| 브루트포스 | 동일 IP가 시간 창(기본 10분) 안에서 기준치(기본 5회) 이상 로그인 실패 |
 | 민감파일 접근 | /etc/passwd, /etc/shadow, /etc/sudoers 경로 정확히 일치 시 감지 |
 
 ## 라이선스
