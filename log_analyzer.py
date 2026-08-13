@@ -5,8 +5,11 @@ from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
-THRESHOLD = 6  # 정상 사용자의 10분 내 최대 실패(5회)보다 1 높게 설정
-WINDOW_MINUTES = 10  # 판정에 쓰는 시간 창 (분)
+NORMAL_MAX_FAILS = 5              # 참고값: 정상 사용자 최대 시도 (CLI 기본값 아님)
+FAST_ATTACK_FAILS = 40
+FAST_ATTACK_WINDOW_MINUTES = 10
+SLOW_ATTACK_FAILS = 8
+SLOW_ATTACK_WINDOW_MINUTES = 1440  # 24시간
 SENSITIVE_FILES = ['/etc/passwd', '/etc/shadow', '/etc/sudoers']
 
 # 종료 코드: 0 탐지 없음 / 1 탐지됨 / 2 입력 오류
@@ -92,7 +95,7 @@ def count_undated(fail_events):
     """시각을 읽을 수 없어 시간 창 판정에서 빠지는 건수."""
     return sum(1 for timestamp, _ in fail_events if timestamp is None)
 
-def detect_bruteforce(fail_events, threshold=THRESHOLD, window_minutes=WINDOW_MINUTES):
+def detect_bruteforce(fail_events, threshold=FAST_ATTACK_FAILS, window_minutes=FAST_ATTACK_WINDOW_MINUTES, label=''):
     """같은 IP가 시간 창 안에서 기준치 이상 실패했는지 판정한다.
 
     브루트포스는 '짧은 시간에 몰아서 시도한다'는 것이 본질이므로
@@ -125,8 +128,9 @@ def detect_bruteforce(fail_events, threshold=THRESHOLD, window_minutes=WINDOW_MI
 
         if peak_count >= threshold:
             start, end = peak_range
+            label_part = f"({label})" if label else ""
             alerts.append(
-                f"[경고] 브루트포스 의심 - IP: {ip} / "
+                f"[경고] 브루트포스 의심{label_part} - IP: {ip} / "
                 f"{window_minutes}분 내 최다 {peak_count}회 "
                 f"({start.strftime('%Y-%m-%d %H:%M:%S')} ~ {end.strftime('%H:%M:%S')})"
             )
@@ -170,16 +174,24 @@ def main():
     parser = argparse.ArgumentParser(description='로그 분석 도구')
     parser.add_argument('logfile', help='분석할 로그 파일 경로')
     parser.add_argument('--output', default='report.txt', help='보고서 저장 파일명')
-    parser.add_argument('--threshold', type=int, default=THRESHOLD,
-                        help=f'브루트포스 판정 기준 실패 횟수 (기본 {THRESHOLD}회)')
-    parser.add_argument('--window-minutes', type=int, default=WINDOW_MINUTES,
-                        help=f'판정에 쓰는 시간 창 (기본 {WINDOW_MINUTES}분)')
+    parser.add_argument('--fast-threshold', type=int, default=FAST_ATTACK_FAILS,
+                        help=f'급속 탐지 기준 실패 횟수 (기본 {FAST_ATTACK_FAILS}회)')
+    parser.add_argument('--fast-window', type=int, default=FAST_ATTACK_WINDOW_MINUTES,
+                        help=f'급속 탐지 시간 창 (기본 {FAST_ATTACK_WINDOW_MINUTES}분)')
+    parser.add_argument('--slow-threshold', type=int, default=SLOW_ATTACK_FAILS,
+                        help=f'완속 탐지 기준 실패 횟수 (기본 {SLOW_ATTACK_FAILS}회)')
+    parser.add_argument('--slow-window', type=int, default=SLOW_ATTACK_WINDOW_MINUTES,
+                        help=f'완속 탐지 시간 창 (기본 {SLOW_ATTACK_WINDOW_MINUTES}분)')
     args = parser.parse_args()
 
-    if args.threshold < 1:
-        parser.error("--threshold 는 1 이상이어야 합니다.")
-    if args.window_minutes < 1:
-        parser.error("--window-minutes 는 1 이상이어야 합니다.")
+    if args.fast_threshold < 1:
+        parser.error("--fast-threshold 는 1 이상이어야 합니다.")
+    if args.fast_window < 1:
+        parser.error("--fast-window 는 1 이상이어야 합니다.")
+    if args.slow_threshold < 1:
+        parser.error("--slow-threshold 는 1 이상이어야 합니다.")
+    if args.slow_window < 1:
+        parser.error("--slow-window 는 1 이상이어야 합니다.")
 
     # 분석 대상 로그를 보고서로 덮어쓰면 원본이 복구 불가능하게 사라진다
     if Path(args.logfile).resolve() == Path(args.output).resolve():
@@ -188,7 +200,9 @@ def main():
     with open_log(args.logfile) as f:
         fail_events, file_alerts = scan_log(f)
     ip_count = count_by_ip(fail_events)
-    brute_alerts = detect_bruteforce(fail_events, args.threshold, args.window_minutes)
+    fast_alerts = detect_bruteforce(fail_events, args.fast_threshold, args.fast_window, label='급속')
+    slow_alerts = detect_bruteforce(fail_events, args.slow_threshold, args.slow_window, label='완속')
+    brute_alerts = fast_alerts + slow_alerts
 
     body = build_report_body(ip_count, brute_alerts, file_alerts,
                              count_undated(fail_events))

@@ -7,8 +7,10 @@ extract_field → count_by_ip → detect_bruteforce 순서로
 from datetime import datetime
 
 from log_analyzer import (
-    THRESHOLD,
-    WINDOW_MINUTES,
+    FAST_ATTACK_FAILS,
+    FAST_ATTACK_WINDOW_MINUTES,
+    SLOW_ATTACK_FAILS,
+    SLOW_ATTACK_WINDOW_MINUTES,
     count_by_ip,
     count_undated,
     detect_bruteforce,
@@ -145,13 +147,13 @@ def test_창을_벗어난_실패는_세지_않는다():
 
 
 def test_기준치보다_한_번_적으면_경고하지_않는다():
-    events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, THRESHOLD)]
-    assert detect_bruteforce(events) == []
+    events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 4)]
+    assert detect_bruteforce(events, threshold=4, window_minutes=10) == []
 
 
 def test_기준치와_정확히_같으면_경고한다():
-    events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, THRESHOLD + 1)]
-    assert len(detect_bruteforce(events)) == 1
+    events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 5)]
+    assert len(detect_bruteforce(events, threshold=4, window_minutes=10)) == 1
 
 
 def test_시각을_못_읽은_줄은_시간_창_판정에서_제외한다():
@@ -203,5 +205,7 @@ def test_모두_시각을_읽었으면_0을_돌려준다():
 
 
 def test_기본_설정값이_정의되어_있다():
-    assert THRESHOLD == 3
-    assert WINDOW_MINUTES == 10
+    assert FAST_ATTACK_FAILS == 40
+    assert FAST_ATTACK_WINDOW_MINUTES == 10
+    assert SLOW_ATTACK_FAILS == 8
+    assert SLOW_ATTACK_WINDOW_MINUTES == 1440

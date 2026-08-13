@@ -84,14 +84,14 @@ class TestCountByIp(unittest.TestCase):
 class TestDetectBruteforce(unittest.TestCase):
     def test_임계값_이상이_창_안에_몰리면_경고(self):
         events = [(datetime(2024, 1, 15, 9, 25, s), '10.0.0.5') for s in (1, 2, 3)]
-        alerts = detect_bruteforce(events)
+        alerts = detect_bruteforce(events, threshold=3, window_minutes=10)
         self.assertEqual(len(alerts), 1)
         self.assertIn('10.0.0.5', alerts[0])
         self.assertIn('3회', alerts[0])
 
     def test_임계값_미만이면_경고_없음(self):
         events = [(datetime(2024, 1, 15, 9, 25, s), '10.0.0.5') for s in (1, 2)]
-        self.assertEqual(detect_bruteforce(events), [])
+        self.assertEqual(detect_bruteforce(events, threshold=3, window_minutes=10), [])
 
 
 class TestScanLog(unittest.TestCase):

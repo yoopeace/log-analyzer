@@ -51,11 +51,12 @@ def test_상대경로와_절대경로로_같은_파일을_가리켜도_거부한
 
 def test_탐지된_항목이_있으면_종료코드_1(tmp_path):
     log = tmp_path / "attack.log"
-    log.write_text(
-        "2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5\n"
-        "2024-01-15 09:25:02 LOGIN_FAIL user=root ip=10.0.0.5\n"
-        "2024-01-15 09:25:03 LOGIN_FAIL user=root ip=10.0.0.5\n"
+    # slow 기본 기준(8회/24시간)을 만족하는 실패 생성
+    lines = "".join(
+        f"2024-01-15 09:25:0{i} LOGIN_FAIL user=root ip=10.0.0.5\n"
+        for i in range(1, 9)
     )
+    log.write_text(lines)
 
     result = run(str(log), "--output", str(tmp_path / "report.txt"))
 
@@ -96,7 +97,7 @@ def test_기간을_두고_흩어진_실패는_탐지하지_않는다(tmp_path):
     assert "이상 없음" in result.stdout
 
 
-def test_window_minutes_옵션으로_창을_넓히면_탐지된다(tmp_path):
+def test_slow_window_옵션으로_창을_넓히면_탐지된다(tmp_path):
     log = tmp_path / "slow.log"
     log.write_text(
         "2024-01-15 09:00:00 LOGIN_FAIL user=root ip=10.0.0.5\n"
@@ -105,13 +106,13 @@ def test_window_minutes_옵션으로_창을_넓히면_탐지된다(tmp_path):
     )
     report = str(tmp_path / "r.txt")
 
-    # 기본 창(10분)에서는 탐지되지 않는다
+    # 기본 설정에서는 탐지되지 않는다 (fast 40회·slow 8회 미만)
     assert run(str(log), "--output", report).returncode == 0
-    # 창을 60분으로 넓히면 탐지된다
-    assert run(str(log), "--output", report, "--window-minutes", "60").returncode == 1
+    # slow 기준치를 3으로 낮추면 40분 창 안의 3회가 탐지된다
+    assert run(str(log), "--output", report, "--slow-threshold", "3").returncode == 1
 
 
-def test_threshold_옵션으로_기준치를_바꿀_수_있다(tmp_path):
+def test_fast_threshold_옵션으로_기준치를_바꿀_수_있다(tmp_path):
     log = tmp_path / "two.log"
     log.write_text(
         "2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5\n"
@@ -120,15 +121,15 @@ def test_threshold_옵션으로_기준치를_바꿀_수_있다(tmp_path):
     report = str(tmp_path / "r.txt")
 
     assert run(str(log), "--output", report).returncode == 0
-    assert run(str(log), "--output", report, "--threshold", "2").returncode == 1
+    assert run(str(log), "--output", report, "--fast-threshold", "2").returncode == 1
 
 
 def test_잘못된_옵션값은_거부한다(tmp_path):
     log = tmp_path / "a.log"
     log.write_text("2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5\n")
 
-    assert run(str(log), "--threshold", "0").returncode == 2
-    assert run(str(log), "--window-minutes", "-5").returncode == 2
+    assert run(str(log), "--fast-threshold", "0").returncode == 2
+    assert run(str(log), "--slow-window", "-5").returncode == 2
 
 
 def test_시각을_못_읽은_실패는_보고서에_별도_표기한다(tmp_path):
