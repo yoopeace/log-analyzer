@@ -84,9 +84,12 @@ class FileAccessAlert:
 
 def format_bruteforce(alert):
     tier_part = f"({alert.tier})" if alert.tier else ""
+    # 끝 시각은 같은 날이면 시각만, 날짜가 바뀌면 날짜까지 쓴다.
+    # (24시간 창에서 '23:00:00 ~ 00:59:00' 처럼 거꾸로 보이는 것을 막는다)
+    end_format = '%H:%M:%S' if alert.start.date() == alert.end.date() else '%Y-%m-%d %H:%M:%S'
     return (f"[경고] 브루트포스 의심{tier_part} - IP: {alert.ip} / "
             f"{alert.window_minutes}분 내 최다 {alert.count}회 "
-            f"({alert.start:%Y-%m-%d %H:%M:%S} ~ {alert.end:%H:%M:%S})")
+            f"({alert.start:%Y-%m-%d %H:%M:%S} ~ {alert.end.strftime(end_format)})")
 
 def format_file_access(alert):
     return f"[경고] 민감파일 접근 - {alert.line}"
