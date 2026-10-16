@@ -4,7 +4,10 @@ import unittest
 from datetime import datetime
 
 from log_analyzer import (
+    BruteforceAlert,
+    FileAccessAlert,
     build_report_body,
+    format_file_access,
     count_by_ip,
     detect_bruteforce,
     extract_field,
@@ -86,8 +89,8 @@ class TestDetectBruteforce(unittest.TestCase):
         events = [(datetime(2024, 1, 15, 9, 25, s), '10.0.0.5') for s in (1, 2, 3)]
         alerts = detect_bruteforce(events, threshold=3, window_minutes=10)
         self.assertEqual(len(alerts), 1)
-        self.assertIn('10.0.0.5', alerts[0])
-        self.assertIn('3회', alerts[0])
+        self.assertEqual(alerts[0].ip, '10.0.0.5')
+        self.assertEqual(alerts[0].count, 3)
 
     def test_임계값_미만이면_경고_없음(self):
         events = [(datetime(2024, 1, 15, 9, 25, s), '10.0.0.5') for s in (1, 2)]
@@ -108,7 +111,7 @@ class TestScanLog(unittest.TestCase):
             [(datetime(2024, 1, 15, 9, 25, 1), '10.0.0.5')],
         )
         self.assertEqual(len(file_alerts), 1)
-        self.assertIn('/etc/passwd', file_alerts[0])
+        self.assertEqual(file_alerts[0].path, '/etc/passwd')
 
     def test_시각이_없는_실패줄은_시각을_None으로_담는다(self):
         fail_events, _ = scan_log(iter(["LOGIN_FAIL user=root ip=10.0.0.5\n"]))
@@ -143,7 +146,8 @@ class TestBuildReportBody(unittest.TestCase):
     def test_보고서_본문_형식(self):
         body = build_report_body(
             {'10.0.0.5': 5},
-            ["[경고] 브루트포스 의심 - IP: 10.0.0.5 / 실패횟수: 5회"],
+            [BruteforceAlert('10.0.0.5', '', 10, 5,
+                             datetime(2024, 1, 15, 9, 25, 1), datetime(2024, 1, 15, 9, 25, 5))],
             [],
         )
         self.assertIn("IP별 로그인 실패 횟수:", body)
@@ -151,6 +155,21 @@ class TestBuildReportBody(unittest.TestCase):
         self.assertIn("=== 브루트포스 탐지 결과 ===", body)
         self.assertIn("[경고] 브루트포스 의심", body)
         self.assertIn("=== 민감파일 접근 탐지 결과 ===\n이상 없음", body)
+
+
+class TestFileAccessAlert(unittest.TestCase):
+    def test_스캔_결과에_경로와_원본_줄을_담는다(self):
+        line = "2024-01-15 09:24:33 FILE_ACCESS file=/etc/shadow user=admin\n"
+        _, file_alerts = scan_log(iter([line]))
+        self.assertEqual(file_alerts, [FileAccessAlert('/etc/shadow', line.strip())])
+
+    def test_민감파일_경고_문장_형식(self):
+        alert = FileAccessAlert('/etc/passwd',
+                                '2024-01-15 09:24:33 FILE_ACCESS file=/etc/passwd user=admin')
+        self.assertEqual(
+            format_file_access(alert),
+            "[경고] 민감파일 접근 - 2024-01-15 09:24:33 FILE_ACCESS file=/etc/passwd user=admin",
+        )
 
 
 if __name__ == '__main__':

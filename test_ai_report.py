@@ -4,10 +4,21 @@ AI 에게 보내는 내용은 공격자가 쓴 로그 문구를 포함한다.
 판정 근거가 잘려나가지 않는지, 로그 문구가 지시문처럼 읽히지 않는지 확인한다.
 """
 
+from datetime import datetime
+
 import pytest
 
 from ai_report import build_messages, clean_answer, report_for_ai
-from log_analyzer import Analysis
+from log_analyzer import Analysis, BruteforceAlert, FileAccessAlert
+
+
+def brute_alert(ip):
+    t = datetime(2024, 1, 15, 9, 25, 1)
+    return BruteforceAlert(ip, '급속', 10, 45, t, t)
+
+
+def file_alert(path):
+    return FileAccessAlert(path, f"2024-01-15 09:24:33 FILE_ACCESS file={path} user=admin")
 
 
 def make_result(ip_count=None, brute=None, files=None, undated=0):
@@ -19,7 +30,7 @@ def make_result(ip_count=None, brute=None, files=None, undated=0):
 # ─────────────────────────────────────────
 
 def test_경고가_IP_목록보다_앞에_온다():
-    result = make_result({'10.0.0.5': 45}, brute=["[경고] 브루트포스 의심(급속) - IP: 10.0.0.5"])
+    result = make_result({'10.0.0.5': 45}, brute=[brute_alert('10.0.0.5')])
     text = report_for_ai(result)
     assert text.index("브루트포스 의심") < text.index("IP별 로그인 실패 횟수")
 
@@ -28,8 +39,8 @@ def test_IP가_많아_잘려도_경고는_남는다():
     # IP 수백 개가 앞에 오면 6000자 제한에서 경고가 통째로 잘려나가던 문제
     many_ips = {f"192.168.{i // 256}.{i % 256}": 1 for i in range(1000)}
     result = make_result(many_ips,
-                         brute=["[경고] 브루트포스 의심(급속) - IP: 198.51.100.7"],
-                         files=["[경고] 민감파일 접근 - FILE_ACCESS file=/etc/shadow"])
+                         brute=[brute_alert('198.51.100.7')],
+                         files=[file_alert('/etc/shadow')])
 
     text = report_for_ai(result, limit=6000)
 
@@ -45,7 +56,8 @@ def test_잘렸으면_잘렸다고_밝힌다():
 
 
 def test_맨_앞에_경고_건수를_요약한다():
-    result = make_result(brute=["a", "b"], files=["c"])
+    result = make_result(brute=[brute_alert('1.1.1.1'), brute_alert('2.2.2.2')],
+                         files=[file_alert('/etc/shadow')])
     first_line = report_for_ai(result).splitlines()[0]
     assert "2건" in first_line and "1건" in first_line
 

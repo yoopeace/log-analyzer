@@ -33,8 +33,10 @@ def report_for_ai(result, limit=MAX_REPORT_CHARS):
     sections = [
         f"경고 요약: 브루트포스 {len(result.brute_alerts)}건, "
         f"민감파일 접근 {len(result.file_alerts)}건",
-        la.format_alerts("브루트포스 탐지 결과", result.brute_alerts),
-        la.format_alerts("민감파일 접근 탐지 결과", result.file_alerts),
+        la.format_alerts("브루트포스 탐지 결과",
+                         [la.format_bruteforce(a) for a in result.brute_alerts]),
+        la.format_alerts("민감파일 접근 탐지 결과",
+                         [la.format_file_access(a) for a in result.file_alerts]),
     ]
     if result.undated_count:
         sections.append(la.format_undated(result.undated_count))

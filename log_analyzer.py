@@ -64,6 +64,34 @@ def extract_field(line, field):
     match = re.search(pattern, line)
     return match.group(1) if match else None
 
+
+# 경고는 문장이 아니라 데이터로 다룬다. 문장은 화면·보고서에 찍는 순간에만 만든다.
+# 문장으로 흘려보내면 같은 IP의 경고를 묶거나, 등급별로 세거나, 테스트에서
+# 값을 비교할 수 없고 '10분' in alert 처럼 글자를 찾는 수밖에 없다.
+@dataclass(frozen=True)
+class BruteforceAlert:
+    ip: str
+    tier: str             # '급속' / '완속' (빈 문자열이면 등급 표시 없음)
+    window_minutes: int
+    count: int            # 창 안의 최다 실패 횟수
+    start: datetime
+    end: datetime
+
+@dataclass(frozen=True)
+class FileAccessAlert:
+    path: str             # 접근한 민감파일 경로
+    line: str             # 정제된 원본 로그 줄
+
+def format_bruteforce(alert):
+    tier_part = f"({alert.tier})" if alert.tier else ""
+    return (f"[경고] 브루트포스 의심{tier_part} - IP: {alert.ip} / "
+            f"{alert.window_minutes}분 내 최다 {alert.count}회 "
+            f"({alert.start:%Y-%m-%d %H:%M:%S} ~ {alert.end:%H:%M:%S})")
+
+def format_file_access(alert):
+    return f"[경고] 민감파일 접근 - {alert.line}"
+
+
 def scan_log(lines):
     """로그를 한 줄씩 훑어 (시각, IP) 실패 이벤트와 민감파일 경고를 모은다.
 
@@ -84,7 +112,7 @@ def scan_log(lines):
         if 'FILE_ACCESS' in tokens:
             accessed_file = extract_field(line, 'file')
             if accessed_file in SENSITIVE_FILES:
-                file_alerts.append(f"[경고] 민감파일 접근 - {line.strip()}")
+                file_alerts.append(FileAccessAlert(accessed_file, line.strip()))
     return fail_events, file_alerts
 
 def count_by_ip(fail_events):
@@ -98,7 +126,7 @@ def count_undated(fail_events):
     """시각을 읽을 수 없어 시간 창 판정에서 빠지는 건수."""
     return sum(1 for timestamp, _ in fail_events if timestamp is None)
 
-def detect_bruteforce(fail_events, threshold=FAST_ATTACK_FAILS, window_minutes=FAST_ATTACK_WINDOW_MINUTES, label=''):
+def detect_bruteforce(fail_events, threshold=FAST_ATTACK_FAILS, window_minutes=FAST_ATTACK_WINDOW_MINUTES, tier=''):
     """같은 IP가 시간 창 안에서 기준치 이상 실패했는지 판정한다.
 
     브루트포스는 '짧은 시간에 몰아서 시도한다'는 것이 본질이므로
@@ -131,12 +159,7 @@ def detect_bruteforce(fail_events, threshold=FAST_ATTACK_FAILS, window_minutes=F
 
         if peak_count >= threshold:
             start, end = peak_range
-            label_part = f"({label})" if label else ""
-            alerts.append(
-                f"[경고] 브루트포스 의심{label_part} - IP: {ip} / "
-                f"{window_minutes}분 내 최다 {peak_count}회 "
-                f"({start.strftime('%Y-%m-%d %H:%M:%S')} ~ {end.strftime('%H:%M:%S')})"
-            )
+            alerts.append(BruteforceAlert(ip, tier, window_minutes, peak_count, start, end))
     return alerts
 
 def format_ip_counts(ip_count):
@@ -157,8 +180,8 @@ def format_undated(undated_count):
 def build_report_body(ip_count, brute_alerts, file_alerts, undated_count=0):
     sections = [
         format_ip_counts(ip_count),
-        format_alerts("브루트포스 탐지 결과", brute_alerts),
-        format_alerts("민감파일 접근 탐지 결과", file_alerts),
+        format_alerts("브루트포스 탐지 결과", [format_bruteforce(a) for a in brute_alerts]),
+        format_alerts("민감파일 접근 탐지 결과", [format_file_access(a) for a in file_alerts]),
     ]
     if undated_count:
         sections.append(format_undated(undated_count))
@@ -190,8 +213,8 @@ def analyze(lines,
     한쪽만 고쳐졌을 때 두 결과가 서로 달라진다.
     """
     fail_events, file_alerts = scan_log(lines)
-    fast = detect_bruteforce(fail_events, fast_threshold, fast_window, label='급속')
-    slow = detect_bruteforce(fail_events, slow_threshold, slow_window, label='완속')
+    fast = detect_bruteforce(fail_events, fast_threshold, fast_window, tier='급속')
+    slow = detect_bruteforce(fail_events, slow_threshold, slow_window, tier='완속')
     return Analysis(count_by_ip(fail_events), fast + slow, file_alerts,
                     count_undated(fail_events))
 

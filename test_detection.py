@@ -11,11 +11,13 @@ from log_analyzer import (
     FAST_ATTACK_WINDOW_MINUTES,
     SLOW_ATTACK_FAILS,
     SLOW_ATTACK_WINDOW_MINUTES,
+    BruteforceAlert,
     analyze,
     count_by_ip,
     count_undated,
     detect_bruteforce,
     extract_field,
+    format_bruteforce,
     open_log,
     parse_timestamp,
 )
@@ -115,7 +117,7 @@ def test_짧은_시간에_몰린_실패는_경고한다():
     events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 4)]
     alerts = detect_bruteforce(events, threshold=3, window_minutes=10)
     assert len(alerts) == 1
-    assert '10.0.0.5' in alerts[0]
+    assert alerts[0].ip == '10.0.0.5'
 
 
 def test_기간을_두고_흩어진_실패는_경고하지_않는다():
@@ -187,10 +189,26 @@ def test_집계_결과가_비어_있으면_경고하지_않는다():
 
 def test_경고에_창_기간과_시각_범위를_담는다():
     events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 4)]
-    alert = detect_bruteforce(events, threshold=3, window_minutes=10)[0]
-    assert '10분' in alert
-    assert '3회' in alert
-    assert '09:25:01' in alert
+    alert = detect_bruteforce(events, threshold=3, window_minutes=10, tier='급속')[0]
+    assert alert == BruteforceAlert(
+        ip='10.0.0.5', tier='급속', window_minutes=10, count=3,
+        start=ts("2024-01-15 09:25:01"), end=ts("2024-01-15 09:25:03"),
+    )
+
+
+def test_브루트포스_경고_문장_형식():
+    alert = BruteforceAlert('10.0.0.5', '급속', 10, 3,
+                            ts("2024-01-15 09:25:01"), ts("2024-01-15 09:25:03"))
+    assert format_bruteforce(alert) == (
+        "[경고] 브루트포스 의심(급속) - IP: 10.0.0.5 / 10분 내 최다 3회 "
+        "(2024-01-15 09:25:01 ~ 09:25:03)"
+    )
+
+
+def test_등급이_없으면_괄호를_붙이지_않는다():
+    alert = BruteforceAlert('10.0.0.5', '', 10, 3,
+                            ts("2024-01-15 09:25:01"), ts("2024-01-15 09:25:03"))
+    assert format_bruteforce(alert).startswith("[경고] 브루트포스 의심 - IP: 10.0.0.5")
 
 
 # ─────────────────────────────────────────
@@ -235,7 +253,7 @@ def test_analyze는_탐지_결과를_한_번에_돌려준다():
     result = analyze(lines)
 
     assert result.ip_count == {'198.51.100.7': FAST_ATTACK_FAILS, '10.0.0.9': 1}
-    assert any('(급속)' in a and '198.51.100.7' in a for a in result.brute_alerts)
+    assert any(a.tier == '급속' and a.ip == '198.51.100.7' for a in result.brute_alerts)
     assert len(result.file_alerts) == 1
     assert result.undated_count == 1
     assert result.alerts == result.brute_alerts + result.file_alerts
