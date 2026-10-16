@@ -4,17 +4,19 @@ extract_field → count_by_ip → detect_bruteforce 순서로
 로그 한 줄에서 IP를 뽑아 집계하고 공격 여부를 판정한다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from log_analyzer import (
     FAST_ATTACK_FAILS,
     FAST_ATTACK_WINDOW_MINUTES,
     SLOW_ATTACK_FAILS,
     SLOW_ATTACK_WINDOW_MINUTES,
+    analyze,
     count_by_ip,
     count_undated,
     detect_bruteforce,
     extract_field,
+    open_log,
     parse_timestamp,
 )
 
@@ -209,3 +211,59 @@ def test_기본_설정값이_정의되어_있다():
     assert FAST_ATTACK_WINDOW_MINUTES == 10
     assert SLOW_ATTACK_FAILS == 8
     assert SLOW_ATTACK_WINDOW_MINUTES == 1440
+
+
+# ─────────────────────────────────────────
+# 6. analyze: CLI 와 웹앱이 함께 쓰는 분석 한 번에 하기
+# ─────────────────────────────────────────
+
+def burst(ip, count, start="2024-01-15 09:00:00"):
+    """같은 IP가 1초 간격으로 count번 실패한 로그 줄."""
+    base = ts(start)
+    return [
+        f"{(base + timedelta(seconds=i)):%Y-%m-%d %H:%M:%S} LOGIN_FAIL user=root ip={ip}\n"
+        for i in range(count)
+    ]
+
+
+def test_analyze는_탐지_결과를_한_번에_돌려준다():
+    lines = burst('198.51.100.7', FAST_ATTACK_FAILS) + [
+        "2024-01-15 10:00:00 FILE_ACCESS file=/etc/shadow user=admin\n",
+        "LOGIN_FAIL user=root ip=10.0.0.9\n",   # 시각 없는 줄
+    ]
+
+    result = analyze(lines)
+
+    assert result.ip_count == {'198.51.100.7': FAST_ATTACK_FAILS, '10.0.0.9': 1}
+    assert any('(급속)' in a and '198.51.100.7' in a for a in result.brute_alerts)
+    assert len(result.file_alerts) == 1
+    assert result.undated_count == 1
+    assert result.alerts == result.brute_alerts + result.file_alerts
+
+
+def test_analyze는_기준치를_바꿀_수_있다():
+    lines = burst('10.0.0.5', 3)
+    assert analyze(lines).alerts == []
+    assert analyze(lines, slow_threshold=3).brute_alerts != []
+
+
+def test_analyze_보고서는_기존_보고서_형식과_같다():
+    lines = burst('10.0.0.5', 2)
+    report = analyze(lines).report()
+    assert report.startswith("IP별 로그인 실패 횟수:")
+    assert "=== 브루트포스 탐지 결과 ===\n이상 없음" in report
+
+
+# ─────────────────────────────────────────
+# 7. BOM 이 붙은 파일
+# ─────────────────────────────────────────
+
+def test_BOM이_붙은_파일도_첫_줄의_시각을_읽는다(tmp_path):
+    # 윈도우 메모장 등은 파일 맨 앞에 보이지 않는 BOM(﻿)을 붙인다
+    log = tmp_path / "bom.log"
+    log.write_bytes("﻿2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5\n".encode("utf-8"))
+
+    with open_log(str(log)) as f:
+        first = next(f)
+
+    assert parse_timestamp(first) == ts("2024-01-15 09:25:01")

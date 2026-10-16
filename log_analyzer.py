@@ -2,6 +2,7 @@ import argparse
 import re
 import sys
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -29,9 +30,11 @@ def sanitize_line(line):
     return CONTROL_CHARS.sub('', line)
 
 def open_log(filename):
+    # utf-8-sig: 윈도우 메모장 등이 붙이는 BOM(﻿)을 떼고 읽는다.
+    #            떼지 않으면 첫 줄 맨 앞에 보이지 않는 글자가 남아 시각을 못 읽는다.
     # errors='replace': UTF-8이 아닌 바이트가 섞여 있어도 분석을 계속한다
     try:
-        return open(filename, 'r', errors='replace')
+        return open(filename, 'r', encoding='utf-8-sig', errors='replace')
     except FileNotFoundError:
         print(f"❌ 로그 파일을 찾을 수 없습니다: {filename}")
         sys.exit(EXIT_INPUT_ERROR)
@@ -147,6 +150,10 @@ def format_alerts(title, alerts):
     lines.extend(alerts if alerts else ["이상 없음"])
     return "\n".join(lines)
 
+def format_undated(undated_count):
+    # 조용히 버리지 않고 몇 건이 판정에서 빠졌는지 알려 사람이 판단하게 한다
+    return f"※ 시각을 읽을 수 없어 시간 창 판정에서 제외된 로그인 실패: {undated_count}건"
+
 def build_report_body(ip_count, brute_alerts, file_alerts, undated_count=0):
     sections = [
         format_ip_counts(ip_count),
@@ -154,11 +161,39 @@ def build_report_body(ip_count, brute_alerts, file_alerts, undated_count=0):
         format_alerts("민감파일 접근 탐지 결과", file_alerts),
     ]
     if undated_count:
-        # 조용히 버리지 않고 몇 건이 판정에서 빠졌는지 알려 사람이 판단하게 한다
-        sections.append(
-            f"※ 시각을 읽을 수 없어 시간 창 판정에서 제외된 로그인 실패: {undated_count}건"
-        )
+        sections.append(format_undated(undated_count))
     return "\n\n".join(sections)
+
+
+@dataclass
+class Analysis:
+    """분석 결과 한 묶음. CLI 와 웹앱이 같은 결과를 쓰도록 analyze() 가 만든다."""
+    ip_count: dict
+    brute_alerts: list
+    file_alerts: list
+    undated_count: int
+
+    @property
+    def alerts(self):
+        return self.brute_alerts + self.file_alerts
+
+    def report(self):
+        return build_report_body(self.ip_count, self.brute_alerts,
+                                 self.file_alerts, self.undated_count)
+
+def analyze(lines,
+            fast_threshold=FAST_ATTACK_FAILS, fast_window=FAST_ATTACK_WINDOW_MINUTES,
+            slow_threshold=SLOW_ATTACK_FAILS, slow_window=SLOW_ATTACK_WINDOW_MINUTES):
+    """로그 줄들을 받아 탐지를 모두 수행한다.
+
+    분석 흐름을 이 함수 한 곳에만 둔다. CLI 와 웹앱이 각자 흐름을 복사해 두면
+    한쪽만 고쳐졌을 때 두 결과가 서로 달라진다.
+    """
+    fail_events, file_alerts = scan_log(lines)
+    fast = detect_bruteforce(fail_events, fast_threshold, fast_window, label='급속')
+    slow = detect_bruteforce(fail_events, slow_threshold, slow_window, label='완속')
+    return Analysis(count_by_ip(fail_events), fast + slow, file_alerts,
+                    count_undated(fail_events))
 
 def save_report(body, output_file):
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -198,19 +233,15 @@ def main():
         parser.error("입력 로그와 출력 보고서는 서로 다른 파일이어야 합니다.")
 
     with open_log(args.logfile) as f:
-        fail_events, file_alerts = scan_log(f)
-    ip_count = count_by_ip(fail_events)
-    fast_alerts = detect_bruteforce(fail_events, args.fast_threshold, args.fast_window, label='급속')
-    slow_alerts = detect_bruteforce(fail_events, args.slow_threshold, args.slow_window, label='완속')
-    brute_alerts = fast_alerts + slow_alerts
+        result = analyze(f, args.fast_threshold, args.fast_window,
+                         args.slow_threshold, args.slow_window)
 
-    body = build_report_body(ip_count, brute_alerts, file_alerts,
-                             count_undated(fail_events))
+    body = result.report()
     print(body)
     save_report(body, args.output)
 
     # 탐지 결과를 종료 코드로 알려 자동화 도구가 판단할 수 있게 한다
-    return EXIT_DETECTED if (brute_alerts or file_alerts) else EXIT_CLEAN
+    return EXIT_DETECTED if result.alerts else EXIT_CLEAN
 
 if __name__ == '__main__':
     sys.exit(main())
