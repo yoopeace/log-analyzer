@@ -26,6 +26,7 @@ Python으로 개발한 보안 로그 분석 도구.
 | `ai_report.py` | AI 에 보낼 보고서·프롬프트 생성 |
 | `sample.log`, `demo_attack.log` | 예시 로그 |
 | `test_*.py` | 테스트 |
+| `experiments/` | 브루트포스 임계값을 정할 때 쓴 실험 기록 ([설명](experiments/README.md)) |
 
 ## 사용법
 
