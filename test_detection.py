@@ -273,6 +273,38 @@ def test_analyze는_기준치를_바꿀_수_있다():
     assert analyze(lines, slow_threshold=3).brute_alerts != []
 
 
+def spread(ip, count, every_minutes, start="2024-01-15 09:00:00"):
+    """같은 IP가 every_minutes 분 간격으로 count번 실패한 로그 줄 (천천히 시도하는 공격)."""
+    base = ts(start)
+    return [
+        f"{(base + timedelta(minutes=i * every_minutes)):%Y-%m-%d %H:%M:%S} LOGIN_FAIL user=root ip={ip}\n"
+        for i in range(count)
+    ]
+
+
+def test_같은_IP가_두_단계에_모두_걸리면_급속_경고_하나만_남긴다():
+    # 10분에 40회면 24시간에 8회도 반드시 넘으므로, 묶지 않으면 같은 공격에 경고가 2개 나온다
+    result = analyze(burst('198.51.100.7', FAST_ATTACK_FAILS))
+
+    assert [(a.ip, a.tier) for a in result.brute_alerts] == [('198.51.100.7', '급속')]
+
+
+def test_완속에만_걸린_IP는_완속_경고가_남는다():
+    # 30분 간격으로 8회: 10분 창에는 1회씩만 들어가 급속 기준에 못 미친다
+    result = analyze(spread('203.0.113.7', SLOW_ATTACK_FAILS, every_minutes=30))
+
+    assert [(a.ip, a.tier) for a in result.brute_alerts] == [('203.0.113.7', '완속')]
+
+
+def test_서로_다른_IP는_각자_경고를_받는다():
+    lines = burst('198.51.100.7', FAST_ATTACK_FAILS) + spread('203.0.113.7', SLOW_ATTACK_FAILS, 30)
+
+    tiers = {a.ip: a.tier for a in analyze(lines).brute_alerts}
+
+    assert tiers == {'198.51.100.7': '급속', '203.0.113.7': '완속'}
+    assert len(analyze(lines).brute_alerts) == 2
+
+
 def test_analyze_보고서는_기존_보고서_형식과_같다():
     lines = burst('10.0.0.5', 2)
     report = analyze(lines).report()

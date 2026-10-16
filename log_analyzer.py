@@ -218,7 +218,14 @@ def analyze(lines,
     fail_events, file_alerts = scan_log(lines)
     fast = detect_bruteforce(fail_events, fast_threshold, fast_window, tier='급속')
     slow = detect_bruteforce(fail_events, slow_threshold, slow_window, tier='완속')
-    return Analysis(count_by_ip(fail_events), fast + slow, file_alerts,
+
+    # 같은 IP가 두 단계에 모두 걸리면 더 심한 급속 경고 하나만 남긴다.
+    # 급속 기준(10분 40회)을 넘으면 완속 기준(24시간 8회)도 반드시 넘으므로,
+    # 묶지 않으면 공격 하나에 경고가 2개씩 나와 건수가 부풀려진다.
+    fast_ips = {alert.ip for alert in fast}
+    slow_only = [alert for alert in slow if alert.ip not in fast_ips]
+
+    return Analysis(count_by_ip(fail_events), fast + slow_only, file_alerts,
                     count_undated(fail_events))
 
 def save_report(body, output_file):
