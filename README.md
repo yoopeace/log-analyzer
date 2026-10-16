@@ -158,7 +158,7 @@ python3 -m venv .venv
 
 ## 테스트
 
-전체 테스트(81건 = pytest 58건 + unittest 23건) 실행:
+전체 테스트(73건) 실행:
 
 ```bash
 python3 -m venv .venv
@@ -166,13 +166,12 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
-pytest 없이 실행 (unittest 23건만 해당):
+| 파일 | 대상 |
+|------|------|
+| `test_log_analyzer.py` | `log_analyzer.py`의 함수들 (정제·시각·항목 읽기·스캔·집계·판정·보고서) |
+| `test_cli.py` | 명령줄 실행 동작 (종료 코드, 입출력 경로 보호, 옵션) |
+| `test_ai_report.py` | AI 에 보낼 보고서·프롬프트 (`ai_report.py`) |
 
-```bash
-python3 -m unittest test_log_analyzer
-```
-
-`test_detection.py`, `test_cli.py`, `test_ai_report.py`는 pytest 기능을 사용하므로 pytest로만 실행됨.
 테스트에는 Streamlit 이 필요 없음 (CI 에서는 pytest 만 설치).
 
 `main` 브랜치에 push하거나 PR을 올리면 GitHub Actions에서 테스트가 자동 실행됨.

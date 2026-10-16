@@ -37,7 +37,7 @@ def sanitize_line(line):
     return CONTROL_CHARS.sub('', line)
 
 def open_log(filename):
-    # utf-8-sig: 윈도우 메모장 등이 붙이는 BOM(﻿)을 떼고 읽는다.
+    # utf-8-sig: 윈도우 메모장 등이 붙이는 BOM(\ufeff)을 떼고 읽는다.
     #            떼지 않으면 첫 줄 맨 앞에 보이지 않는 글자가 남아 시각을 못 읽는다.
     # errors='replace': UTF-8이 아닌 바이트가 섞여 있어도 분석을 계속한다
     try:
