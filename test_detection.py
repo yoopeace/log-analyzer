@@ -208,7 +208,7 @@ def test_브루트포스_경고_문장_형식():
 def test_날짜가_바뀌면_끝_시각에도_날짜를_붙인다():
     # 24시간 창에서는 시작과 끝이 다른 날일 수 있다. 끝에 시각만 쓰면
     # '23:00:00 ~ 00:59:00' 처럼 시간이 거꾸로 흐르는 것처럼 보인다.
-    alert = BruteforceAlert('9.9.9.9', '완속', 1440, 8,
+    alert = BruteforceAlert('9.9.9.9', '누적', 1440, 8,
                             ts("2024-01-01 23:00:00"), ts("2024-01-02 00:59:00"))
     assert format_bruteforce(alert).endswith("(2024-01-01 23:00:00 ~ 2024-01-02 00:59:00)")
 
@@ -289,11 +289,11 @@ def test_같은_IP가_두_단계에_모두_걸리면_급속_경고_하나만_남
     assert [(a.ip, a.tier) for a in result.brute_alerts] == [('198.51.100.7', '급속')]
 
 
-def test_완속에만_걸린_IP는_완속_경고가_남는다():
+def test_누적에만_걸린_IP는_누적_경고가_남는다():
     # 30분 간격으로 8회: 10분 창에는 1회씩만 들어가 급속 기준에 못 미친다
     result = analyze(spread('203.0.113.7', SLOW_ATTACK_FAILS, every_minutes=30))
 
-    assert [(a.ip, a.tier) for a in result.brute_alerts] == [('203.0.113.7', '완속')]
+    assert [(a.ip, a.tier) for a in result.brute_alerts] == [('203.0.113.7', '누적')]
 
 
 def test_서로_다른_IP는_각자_경고를_받는다():
@@ -301,7 +301,7 @@ def test_서로_다른_IP는_각자_경고를_받는다():
 
     tiers = {a.ip: a.tier for a in analyze(lines).brute_alerts}
 
-    assert tiers == {'198.51.100.7': '급속', '203.0.113.7': '완속'}
+    assert tiers == {'198.51.100.7': '급속', '203.0.113.7': '누적'}
     assert len(analyze(lines).brute_alerts) == 2
 
 

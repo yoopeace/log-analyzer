@@ -139,3 +139,16 @@ def test_시각을_못_읽은_실패는_보고서에_별도_표기한다(tmp_pat
     result = run(str(log), "--output", str(tmp_path / "r.txt"))
 
     assert "시각을 읽을 수 없어" in result.stdout
+
+
+def test_긴_시간에_걸친_실패는_누적_경고로_표시된다(tmp_path):
+    # 등급 이름은 실제 판정 기준(24시간 동안 쌓인 횟수)을 나타내야 한다
+    log = tmp_path / "cumulative.log"
+    log.write_text("".join(
+        f"2024-01-15 {9 + i:02d}:00:00 LOGIN_FAIL user=root ip=203.0.113.7\n" for i in range(8)
+    ))
+
+    result = run(str(log), "--output", str(tmp_path / "r.txt"))
+
+    assert "브루트포스 의심(누적) - IP: 203.0.113.7" in result.stdout
+    assert "완속" not in result.stdout

@@ -109,7 +109,7 @@ def ask_ai(report, engine):
 # ---------------- 화면 ----------------
 st.set_page_config(page_title="로그 분석기 + AI 해설", page_icon="🔍", layout="wide")
 st.title("🔍 로그 분석기 + AI 해설")
-st.caption("규칙 기반으로 브루트포스(급속·완속)와 민감파일 접근을 탐지하고, "
+st.caption("규칙 기반으로 브루트포스(급속·누적)와 민감파일 접근을 탐지하고, "
            "AI 가 결과를 한국어 보고서로 풀어 설명합니다.")
 st.code("2024-01-15 09:25:01 LOGIN_FAIL user=root ip=10.0.0.5", language=None)
 

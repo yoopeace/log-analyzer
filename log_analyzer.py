@@ -6,9 +6,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-NORMAL_MAX_FAILS = 5              # 참고값: 정상 사용자 최대 시도 (CLI 기본값 아님)
+# 실험 기록용 가정: 정상 사용자는 한 번에 최대 5회까지 틀린다 (experiments/README.md).
+# 판정에는 쓰지 않는다. 누적 기준(8회)은 이 값보다 크게 잡되, 하루에 두 번 크게
+# 틀린 정상 사용자(5+5회)는 경고될 수 있음을 감수하고 정했다 (README 알려진 한계).
+NORMAL_MAX_FAILS = 5
+
+# 급속: 짧은 시간에 몰아서 시도하는 공격
 FAST_ATTACK_FAILS = 40
 FAST_ATTACK_WINDOW_MINUTES = 10
+# 누적: 하루 동안 쌓인 실패 횟수로 보는 공격 (속도와 관계없이 횟수 기준)
+# 상수·옵션 이름의 slow 는 예전 등급 이름 '완속'에서 왔다.
 SLOW_ATTACK_FAILS = 8
 SLOW_ATTACK_WINDOW_MINUTES = 1440  # 24시간
 SENSITIVE_FILES = ['/etc/passwd', '/etc/shadow', '/etc/sudoers']
@@ -71,7 +78,7 @@ def extract_field(line, field):
 @dataclass(frozen=True)
 class BruteforceAlert:
     ip: str
-    tier: str             # '급속' / '완속' (빈 문자열이면 등급 표시 없음)
+    tier: str             # '급속' / '누적' (빈 문자열이면 등급 표시 없음)
     window_minutes: int
     count: int            # 창 안의 최다 실패 횟수
     start: datetime
@@ -217,10 +224,10 @@ def analyze(lines,
     """
     fail_events, file_alerts = scan_log(lines)
     fast = detect_bruteforce(fail_events, fast_threshold, fast_window, tier='급속')
-    slow = detect_bruteforce(fail_events, slow_threshold, slow_window, tier='완속')
+    slow = detect_bruteforce(fail_events, slow_threshold, slow_window, tier='누적')
 
     # 같은 IP가 두 단계에 모두 걸리면 더 심한 급속 경고 하나만 남긴다.
-    # 급속 기준(10분 40회)을 넘으면 완속 기준(24시간 8회)도 반드시 넘으므로,
+    # 급속 기준(10분 40회)을 넘으면 누적 기준(24시간 8회)도 반드시 넘으므로,
     # 묶지 않으면 공격 하나에 경고가 2개씩 나와 건수가 부풀려진다.
     fast_ips = {alert.ip for alert in fast}
     slow_only = [alert for alert in slow if alert.ip not in fast_ips]
@@ -247,9 +254,9 @@ def main():
     parser.add_argument('--fast-window', type=int, default=FAST_ATTACK_WINDOW_MINUTES,
                         help=f'급속 탐지 시간 창 (기본 {FAST_ATTACK_WINDOW_MINUTES}분)')
     parser.add_argument('--slow-threshold', type=int, default=SLOW_ATTACK_FAILS,
-                        help=f'완속 탐지 기준 실패 횟수 (기본 {SLOW_ATTACK_FAILS}회)')
+                        help=f'누적 탐지 기준 실패 횟수 (기본 {SLOW_ATTACK_FAILS}회)')
     parser.add_argument('--slow-window', type=int, default=SLOW_ATTACK_WINDOW_MINUTES,
-                        help=f'완속 탐지 시간 창 (기본 {SLOW_ATTACK_WINDOW_MINUTES}분)')
+                        help=f'누적 탐지 시간 창 (기본 {SLOW_ATTACK_WINDOW_MINUTES}분)')
     args = parser.parse_args()
 
     if args.fast_threshold < 1:
