@@ -15,18 +15,15 @@ Python으로 개발한 보안 로그 분석 도구.
 - 분석 결과를 보고서 파일로 저장
 - 로그 파일이 없거나 필드가 누락된 경우에도 오류 없이 안내 후 처리
 - 결과를 종료 코드로 구분해 자동화 도구와 연동 가능
-- 웹앱: 브라우저에서 로그를 올리면 탐지 결과와 AI 해설을 함께 표시 (아래 "웹앱" 참고)
 
 ## 파일 구성
 
 | 파일 | 역할 |
 |------|------|
 | `log_analyzer.py` | 탐지 로직과 CLI (판정의 근거) |
-| `streamlit_app.py` | 웹앱 화면 |
-| `ai_report.py` | AI 에 보낼 보고서·프롬프트 생성 |
 | `sample.log`, `demo_attack.log` | 예시 로그 |
 | `test_*.py` | 테스트 |
-| `experiments/` | 브루트포스 임계값을 정할 때 쓴 실험 기록 ([설명](experiments/README.md)) |
+| `experiments/` | 지난 실험 기록: 브루트포스 임계값 실험, AI 해설 실험 ([목록](experiments/README.md)) |
 
 ## 사용법
 
@@ -100,33 +97,6 @@ IP별 로그인 실패 횟수:
 - `203.0.113.7`: 9시간에 걸쳐 10회 실패 → 한 번에 몰리지 않아 급속 기준에는 안 걸리지만, 하루 누적 횟수로 잡힘
 - `192.168.1.20`: 2회 실패 → 정상 사용자의 비밀번호 실수로 보고 경고하지 않음
 
-## 웹앱 (AI 해설)
-
-Streamlit 웹앱으로 로그 파일을 올리면 왼쪽에 규칙 기반 탐지 결과, 오른쪽에 AI 해설을 보여줌.
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/streamlit run streamlit_app.py
-```
-
-**역할 분리:** 판정은 `log_analyzer.py`의 규칙이 하고, AI 는 그 결과를 한국어로 풀어 설명만 함. AI 가 틀리더라도 탐지 결과는 바뀌지 않으며, 화면에도 "판정은 왼쪽 결과가 기준"임을 표시함.
-
-**AI 엔진**
-
-| 엔진 | 설명 | 준비물 |
-|------|------|--------|
-| HF API (기본) | Hugging Face Inference Providers 서버의 모델 사용 | `.streamlit/secrets.toml`에 `HF_TOKEN = "..."` (크레딧 필요) |
-| 로컬 | 작은 모델을 내 컴퓨터에서 직접 실행 | `pip install torch transformers` 별도 설치, 첫 실행 시 모델 약 3GB 내려받음 |
-
-`HF_TOKEN`이 없으면 AI 해설만 건너뛰고 탐지 결과는 정상 표시함. `.streamlit/secrets.toml`은 `.gitignore`로 저장소에서 제외됨.
-
-**AI 에 보내는 내용의 보안 처리** (`ai_report.py`)
-
-- 로그 문구는 공격자가 조작할 수 있는 데이터이므로, 시스템 프롬프트에서 그 안의 지시를 따르지 말라고 명시함
-- 로그에 심은 ` ``` `로 코드블록을 일찍 닫아 지시문을 끼워 넣지 못하도록 백틱을 치환함
-- 길이 제한(6000자)으로 잘리더라도 판정 근거가 남도록, 경고 요약과 경고 목록을 앞에 두고 IP 목록을 맨 뒤에 둠
-
 ## 종료 코드
 
 자동화 도구에서 결과를 판단할 수 있도록 종료 코드를 구분함.
@@ -158,7 +128,7 @@ python3 -m venv .venv
 
 ## 테스트
 
-전체 테스트(73건) 실행:
+전체 테스트(64건) 실행:
 
 ```bash
 python3 -m venv .venv
@@ -170,17 +140,16 @@ python3 -m venv .venv
 |------|------|
 | `test_log_analyzer.py` | `log_analyzer.py`의 함수들 (정제·시각·항목 읽기·스캔·집계·판정·보고서) |
 | `test_cli.py` | 명령줄 실행 동작 (종료 코드, 입출력 경로 보호, 옵션) |
-| `test_ai_report.py` | AI 에 보낼 보고서·프롬프트 (`ai_report.py`) |
 
-테스트에는 Streamlit 이 필요 없음 (CI 에서는 pytest 만 설치).
+`experiments/`의 지난 실험 코드는 당시 그대로 보존한 기록이라 테스트 대상에서 뺌 (`pytest.ini`).
 
 `main` 브랜치에 push하거나 PR을 올리면 GitHub Actions에서 테스트가 자동 실행됨.
 
 ## 기술 스택
 
 - Python 3
-- CLI: 표준 라이브러리만 사용 (argparse, collections, dataclasses, datetime, pathlib, re)
-- 웹앱: streamlit, huggingface_hub
+- 표준 라이브러리만 사용 (argparse, collections, dataclasses, datetime, pathlib, re)
+- 테스트: pytest
 
 ## 탐지 가능한 공격 패턴
 

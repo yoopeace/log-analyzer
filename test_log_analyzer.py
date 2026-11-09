@@ -4,7 +4,7 @@
 정제(sanitize) → 파일 열기 → 시각·항목 읽기 → 스캔 → 집계 → 브루트포스 판정
 → 경고 문장 만들기 → analyze() 로 한 번에 분석
 
-명령줄 동작은 test_cli.py, AI 보고서는 test_ai_report.py 에 있다.
+명령줄 동작은 test_cli.py 에 있다.
 """
 
 from datetime import datetime, timedelta
