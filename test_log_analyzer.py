@@ -15,6 +15,7 @@ import pytest
 from log_analyzer import (
     DEFAULT_TIERS,
     FAST_TIER,
+    MAX_WINDOW_MINUTES,
     SLOW_TIER,
     BruteforceAlert,
     DetectionTier,
@@ -72,6 +73,23 @@ def test_ANSI_이스케이프와_제어문자를_제거한다():
 
 def test_개행과_탭은_남긴다():
     assert sanitize_line("a\tb\n") == "a\tb\n"
+
+
+@pytest.mark.parametrize("hidden", [
+    "\x9b",       # C1 제어문자: 일부 터미널은 이것만으로 색상·커서 명령을 시작한다
+    "\u202e",     # 글자 방향 뒤집기: 'user=\u202enimda' 가 화면에 'admin' 처럼 보인다
+    "\u2066",     # 방향 격리
+    "\u200f",     # 방향 표시
+    "\u200b",     # 폭 0 공백
+    "\u2060",     # 폭 0 결합 방지
+    "\ufeff",     # 줄 중간의 BOM (폭 0)
+])
+def test_화면을_속이는_보이지_않는_문자를_제거한다(hidden):
+    assert sanitize_line(f"user={hidden}admin") == "user=admin"
+
+
+def test_한글과_일반_유니코드는_남긴다():
+    assert sanitize_line("사용자=홍길동 메모=é→✓") == "사용자=홍길동 메모=é→✓"
 
 
 def test_일반_텍스트는_그대로_둔다():
@@ -216,6 +234,33 @@ def test_NOT_LOGIN_FAIL을_로그인_실패로_착각하지_않는다():
 
 def test_profile_항목을_민감파일_접근으로_착각하지_않는다():
     _, file_alerts = scan_log(iter(["FILE_ACCESS profile=/etc/passwd user=x\n"]))
+    assert file_alerts == []
+
+
+def test_폭_0_문자를_끼워_넣은_이벤트도_탐지한다():
+    # 'LOGIN\u200b_FAIL' 은 화면에 LOGIN_FAIL 로 보이지만 글자로는 다르다
+    lines = iter(["2024-01-15 09:25:01 LOGIN\u200b_FAIL user=root ip=10.0.0.5\n"])
+    fail_events, _ = scan_log(lines)
+    assert fail_events == [(ts("2024-01-15 09:25:01"), '10.0.0.5')]
+
+
+@pytest.mark.parametrize("written, sensitive", [
+    ("/etc//shadow", "/etc/shadow"),
+    ("/etc/./passwd", "/etc/passwd"),
+    ("/etc/../etc/sudoers", "/etc/sudoers"),
+    ("//etc/shadow", "/etc/shadow"),
+    ("/etc/shadow/", "/etc/shadow"),
+])
+def test_경로를_다르게_적어도_민감파일_접근을_탐지한다(written, sensitive):
+    line = f"2024-01-15 09:24:33 FILE_ACCESS file={written} user=x"
+    _, file_alerts = scan_log(iter([line + "\n"]))
+    # 경고에는 정리한 경로와, 실제로 적혀 있던 원본 줄을 함께 담는다
+    assert file_alerts == [FileAccessAlert(sensitive, line)]
+
+
+@pytest.mark.parametrize("written", ["/etc/shadow/../hosts", "etc/passwd", "/home/etc/passwd"])
+def test_경로를_정리해도_다른_파일이면_탐지하지_않는다(written):
+    _, file_alerts = scan_log(iter([f"FILE_ACCESS file={written} user=x\n"]))
     assert file_alerts == []
 
 
@@ -474,6 +519,13 @@ def test_기준_횟수나_시간_창이_1보다_작은_등급은_만들_수_없�
     # CLI 를 거치지 않고 analyze() 를 직접 불러도 이런 값은 들어갈 수 없어야 한다.
     with pytest.raises(ValueError):
         DetectionTier('시험', threshold=threshold, window_minutes=window)
+
+
+def test_표현할_수_없을_만큼_큰_시간_창은_만들_수_없다():
+    with pytest.raises(ValueError):
+        DetectionTier('시험', threshold=3, window_minutes=MAX_WINDOW_MINUTES + 1)
+    # 한계값 자체는 쓸 수 있다
+    assert DetectionTier('시험', threshold=3, window_minutes=MAX_WINDOW_MINUTES)
 
 
 def test_등급을_바꿔_만들어도_같은_검사를_거친다():

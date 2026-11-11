@@ -1,4 +1,6 @@
 import argparse
+import os
+import posixpath
 import re
 import sys
 from collections import deque
@@ -20,12 +22,15 @@ EXIT_INPUT_ERROR = 2
 
 # ANSI 이스케이프 시퀀스 전체 (예: \x1b[31m) — 앞의 \x1b만 지우면 '[31m' 이 남는다
 ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]')
-# 개행/탭을 제외한 제어문자
-CONTROL_CHARS = re.compile(r'[\x00-\x08\x0b-\x1f\x7f]')
+# 화면을 속일 수 있는 보이지 않는 문자
+#   - C0·C1 제어문자 (개행·탭 제외). C1 의 0x9b 는 일부 터미널에서 ESC [ 와 같은 명령 시작이다
+#   - 글자 방향을 바꾸는 문자 (U+200E·200F, U+202A~202E, U+2066~2069): 'nimda' 를 'admin' 처럼 보이게 한다
+#   - 폭 0 문자 (U+200B~200D, U+2060, U+FEFF): 'LOGIN' 과 '_FAIL' 사이에 끼워 넣어 탐지를 피한다
+CONTROL_CHARS = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]')
 
 def sanitize_line(line):
-    # 로그는 공격자가 내용을 심을 수 있는 신뢰할 수 없는 입력이므로 제어문자를 제거한다.
-    # 이벤트 이름을 색상 코드로 감싸 탐지를 피하는 것도 막기 위해 시퀀스 전체를 지운다.
+    # 로그는 공격자가 내용을 심을 수 있는 신뢰할 수 없는 입력이므로 보이지 않는 문자를 제거한다.
+    # 탐지 전에 지우므로, 이벤트 이름을 색상 코드나 폭 0 문자로 쪼개 탐지를 피하는 것도 막는다.
     line = ANSI_ESCAPE.sub('', line)
     return CONTROL_CHARS.sub('', line)
 
@@ -52,12 +57,27 @@ def parse_timestamp(line):
         # 형식은 맞지만 2월 30일처럼 존재하지 않는 날짜인 경우
         return None
 
+def normalize_path(path):
+    """'/etc//shadow', '/etc/./passwd', '/etc/../etc/sudoers' 처럼 표기만 다른 경로를 한 모양으로 맞춘다.
+
+    로그를 남긴 시스템의 실제 파일은 볼 수 없으므로 링크는 따라가지 않고 글자로만 정리한다.
+    """
+    normalized = posixpath.normpath(path)
+    # POSIX 규칙상 normpath 는 맨 앞의 '//' 를 그대로 둔다
+    if normalized.startswith('//'):
+        normalized = '/' + normalized.lstrip('/')
+    return normalized
+
 def extract_field(line, field):
     # (?<!\S): 항목 이름 앞이 공백이거나 줄 시작이어야 한다.
     # 이 조건이 없으면 'client_ip=' 의 'ip=' 나 'profile=' 의 'file=' 을 잘못 집어낸다.
     pattern = rf'(?<!\S){re.escape(field)}=(\S+)'
     match = re.search(pattern, line)
     return match.group(1) if match else None
+
+
+# 시간 창으로 쓸 수 있는 가장 큰 값(분). 이보다 크면 파이썬이 시간 길이로 표현하지 못한다.
+MAX_WINDOW_MINUTES = timedelta.max // timedelta(minutes=1)
 
 
 @dataclass(frozen=True)
@@ -76,6 +96,8 @@ class DetectionTier:
             raise ValueError(f"{self.name} 탐지 기준 횟수는 1 이상이어야 합니다: {self.threshold}")
         if self.window_minutes < 1:
             raise ValueError(f"{self.name} 탐지 시간 창은 1분 이상이어야 합니다: {self.window_minutes}")
+        if self.window_minutes > MAX_WINDOW_MINUTES:
+            raise ValueError(f"{self.name} 탐지 시간 창은 최대 {MAX_WINDOW_MINUTES}분입니다: {self.window_minutes}")
 
 # 급속: 짧은 시간에 몰아서 시도하는 공격
 FAST_TIER = DetectionTier('급속', threshold=40, window_minutes=10)
@@ -135,8 +157,11 @@ def scan_log(lines):
                 fail_events.append((parse_timestamp(line), ip))
         if 'FILE_ACCESS' in tokens:
             accessed_file = extract_field(line, 'file')
-            if accessed_file in SENSITIVE_FILES:
-                file_alerts.append(FileAccessAlert(accessed_file, line.strip()))
+            if accessed_file is not None:
+                # 표기만 바꿔(/etc//shadow 등) 탐지를 피하지 못하게 정리한 뒤 비교한다
+                accessed_file = normalize_path(accessed_file)
+                if accessed_file in SENSITIVE_FILES:
+                    file_alerts.append(FileAccessAlert(accessed_file, line.strip()))
     return fail_events, file_alerts
 
 def count_by_ip(fail_events):
@@ -268,17 +293,34 @@ def positive_int(text):
         raise argparse.ArgumentTypeError(f"1 이상의 정수여야 합니다 (입력값: {text})")
     return value
 
+def window_minutes_option(text):
+    """시간 창 옵션 값: 1 이상, 파이썬이 시간 길이로 표현할 수 있는 크기까지."""
+    value = positive_int(text)
+    if value > MAX_WINDOW_MINUTES:
+        raise argparse.ArgumentTypeError(
+            f"시간 창은 최대 {MAX_WINDOW_MINUTES}분까지 지정할 수 있습니다 (입력값: {text})")
+    return value
+
+def is_same_file(a, b):
+    """경로 표기·심볼릭 링크·하드링크와 관계없이 실제로 같은 파일인지 확인한다."""
+    if Path(a).resolve() == Path(b).resolve():
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False   # 둘 중 하나가 아직 없으면 같은 파일일 수 없다
+
 def build_parser():
     parser = argparse.ArgumentParser(description='로그 분석 도구')
     parser.add_argument('logfile', help='분석할 로그 파일 경로')
     parser.add_argument('--output', default='report.txt', help='보고서 저장 파일명')
     parser.add_argument('--fast-threshold', type=positive_int, default=FAST_TIER.threshold,
                         help=f'급속 탐지 기준 실패 횟수 (기본 {FAST_TIER.threshold}회)')
-    parser.add_argument('--fast-window', type=positive_int, default=FAST_TIER.window_minutes,
+    parser.add_argument('--fast-window', type=window_minutes_option, default=FAST_TIER.window_minutes,
                         help=f'급속 탐지 시간 창 (기본 {FAST_TIER.window_minutes}분)')
     parser.add_argument('--slow-threshold', type=positive_int, default=SLOW_TIER.threshold,
                         help=f'누적 탐지 기준 실패 횟수 (기본 {SLOW_TIER.threshold}회)')
-    parser.add_argument('--slow-window', type=positive_int, default=SLOW_TIER.window_minutes,
+    parser.add_argument('--slow-window', type=window_minutes_option, default=SLOW_TIER.window_minutes,
                         help=f'누적 탐지 시간 창 (기본 {SLOW_TIER.window_minutes}분)')
     return parser
 
@@ -291,8 +333,9 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # 분석 대상 로그를 보고서로 덮어쓰면 원본이 복구 불가능하게 사라진다
-    if Path(args.logfile).resolve() == Path(args.output).resolve():
+    # 분석 대상 로그를 보고서로 덮어쓰면 원본이 복구 불가능하게 사라진다.
+    # 경로 글자만 비교하면 하드링크(같은 파일의 다른 이름)를 놓친다.
+    if is_same_file(args.logfile, args.output):
         parser.error("입력 로그와 출력 보고서는 서로 다른 파일이어야 합니다.")
 
     tiers = (

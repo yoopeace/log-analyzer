@@ -170,6 +170,30 @@ def test_입력_로그와_출력_경로가_같으면_거부한다(tmp_path, caps
     assert log.read_text() == ONE_FAIL, "원본 로그가 덮어써졌다"
 
 
+def test_출력이_로그의_하드링크면_거부한다(tmp_path, capsys):
+    # 경로는 달라도 실제로는 같은 파일이다. 저장하면 원본 로그가 사라진다.
+    log = write_log(tmp_path, ONE_FAIL, name="events.log")
+    link = tmp_path / "report.txt"
+    os.link(log, link)
+
+    code, err = rejected_option(capsys, [str(log), "--output", str(link)])
+
+    assert code == 2
+    assert "서로 다른 파일이어야 합니다" in err
+    assert log.read_text() == ONE_FAIL, "원본 로그가 덮어써졌다"
+
+
+def test_출력이_로그를_가리키는_심볼릭_링크면_거부한다(tmp_path, capsys):
+    log = write_log(tmp_path, ONE_FAIL, name="events.log")
+    link = tmp_path / "report.txt"
+    link.symlink_to(log)
+
+    code, _ = rejected_option(capsys, [str(log), "--output", str(link)])
+
+    assert code == 2
+    assert log.read_text() == ONE_FAIL
+
+
 def test_상대경로와_절대경로로_같은_파일을_가리켜도_거부한다(tmp_path, capsys, monkeypatch):
     log = write_log(tmp_path, "LOGIN_FAIL user=root ip=10.0.0.5\n", name="events.log")
     monkeypatch.chdir(tmp_path)
@@ -238,6 +262,16 @@ def test_탐지_기준_옵션은_1_이상의_정수만_받는다(tmp_path, capsy
 
     assert code == 2
     assert f"argument {option}: 1 이상의 정수여야 합니다 (입력값: {value})" in err
+
+
+@pytest.mark.parametrize("option", ["--fast-window", "--slow-window"])
+def test_너무_큰_시간_창은_안내문과_함께_거부한다(tmp_path, capsys, option):
+    log = write_log(tmp_path, ONE_FAIL)
+
+    code, err = rejected_option(capsys, [str(log), option, "99999999999999"])
+
+    assert code == 2, "오류 추적 화면으로 끝나면 종료 코드가 1(탐지됨)로 보인다"
+    assert f"argument {option}: 시간 창은 최대 1439999999999분까지 지정할 수 있습니다" in err
 
 
 def test_시각을_못_읽은_실패는_보고서에_별도_표기한다(tmp_path, capsys):

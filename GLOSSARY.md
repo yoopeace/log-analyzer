@@ -29,7 +29,7 @@ _Avoid_: 완속, 저속, slow 공격 (판정 기준이 속도가 아니므로)
 _Avoid_: 해킹, 공격 확정
 
 **민감파일 접근**:
-`/etc/passwd`, `/etc/shadow`, `/etc/sudoers`에 대한 `FILE_ACCESS` 이벤트.
+`/etc/passwd`, `/etc/shadow`, `/etc/sudoers`에 대한 `FILE_ACCESS` 이벤트. `/etc//shadow`처럼 표기만 다른 경로도 같은 파일로 본다.
 _Avoid_: 파일 유출
 
 **시각 미확인 실패**:
