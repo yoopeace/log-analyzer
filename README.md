@@ -22,7 +22,9 @@ Python으로 개발한 보안 로그 분석 도구.
 |------|------|
 | `log_analyzer.py` | 탐지 로직과 CLI (판정의 근거) |
 | `sample.log`, `demo_attack.log` | 예시 로그 |
-| `test_*.py` | 테스트 |
+| `report.txt` | `demo_attack.log` 분석 보고서 예시 (기본 저장 위치라 옵션 없이 실행하면 새 결과로 덮어써짐) |
+| `test_log_analyzer.py`, `test_cli.py` | 테스트 |
+| `GLOSSARY.md` | 용어 정리 (탐지 등급, 급속, 누적, 시간 창 등) |
 | `experiments/` | 지난 실험 기록: 브루트포스 임계값 실험, AI 해설 실험 ([목록](experiments/README.md)) |
 
 ## 사용법
@@ -107,7 +109,7 @@ IP별 로그인 실패 횟수:
 |------|------|
 | 0 | 탐지된 항목 없음 |
 | 1 | 브루트포스 또는 민감파일 접근 탐지 |
-| 2 | 입력 오류 (파일 없음, 권한 없음, 폴더 지정, 보고서 저장 실패, 잘못된 옵션 값, 입출력 경로 동일) |
+| 2 | 입력 오류 (파일 없음, 권한 없음, 폴더 지정, 보고서 저장 실패, 인자 누락·잘못된 옵션 값, 입출력 경로 동일) |
 
 ## 유의사항
 
@@ -150,7 +152,7 @@ python3 -m venv .venv
 
 ## 기술 스택
 
-- Python 3
+- Python 3.10 이상 (GitHub Actions에서는 3.14로 테스트)
 - 표준 라이브러리만 사용 (argparse, collections, dataclasses, datetime, pathlib, re)
 - 테스트: pytest
 
