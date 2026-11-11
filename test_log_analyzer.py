@@ -2,21 +2,22 @@
 
 로그 한 줄이 처리되는 순서대로 묶었다.
 정제(sanitize) → 파일 열기 → 시각·항목 읽기 → 스캔 → 집계 → 브루트포스 판정
-→ 경고 문장 만들기 → analyze() 로 한 번에 분석
+→ 경고 문장 만들기 → analyze() 로 한 번에 분석 → 탐지 등급 → 보고서 저장
 
 명령줄 동작은 test_cli.py 에 있다.
 """
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
 
 from log_analyzer import (
-    FAST_ATTACK_FAILS,
-    FAST_ATTACK_WINDOW_MINUTES,
-    SLOW_ATTACK_FAILS,
-    SLOW_ATTACK_WINDOW_MINUTES,
+    DEFAULT_TIERS,
+    FAST_TIER,
+    SLOW_TIER,
     BruteforceAlert,
+    DetectionTier,
     FileAccessAlert,
     analyze,
     build_report_body,
@@ -29,8 +30,12 @@ from log_analyzer import (
     open_log,
     parse_timestamp,
     sanitize_line,
+    save_report,
     scan_log,
 )
+
+# 판정 로직만 볼 때 쓰는 시험용 등급: 10분 안에 3회
+TEST_TIER = DetectionTier('시험', threshold=3, window_minutes=10)
 
 
 def ts(text):
@@ -100,10 +105,11 @@ def test_BOM이_붙은_파일도_첫_줄의_시각을_읽는다(tmp_path):
     assert parse_timestamp(first) == ts("2024-01-15 09:25:01")
 
 
-def test_파일이_없으면_입력오류_종료코드로_끝낸다():
-    with pytest.raises(SystemExit) as exc:
+def test_파일이_없으면_예외를_올려보내고_프로그램을_끝내지_않는다(capsys):
+    # 메시지 출력과 종료 코드는 main() 이 정한다. 라이브러리 함수는 알리기만 한다.
+    with pytest.raises(FileNotFoundError):
         open_log('/no/such/file.log')
-    assert exc.value.code == 2
+    assert capsys.readouterr().out == ""
 
 
 # ─────────────────────────────────────────
@@ -257,13 +263,13 @@ def test_모두_시각을_읽었으면_0을_돌려준다():
 
 def test_짧은_시간에_몰린_실패는_경고한다():
     events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 4)]
-    alerts = detect_bruteforce(events, threshold=3, window_minutes=10)
+    alerts = detect_bruteforce(events, TEST_TIER)
     assert [a.ip for a in alerts] == ['10.0.0.5']
 
 
 def test_경고에_IP_등급_창_횟수_시각_범위를_담는다():
     events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 4)]
-    alert = detect_bruteforce(events, threshold=3, window_minutes=10, tier='급속')[0]
+    alert = detect_bruteforce(events, replace(TEST_TIER, name='급속'))[0]
     assert alert == BruteforceAlert(
         ip='10.0.0.5', tier='급속', window_minutes=10, count=3,
         start=ts("2024-01-15 09:25:01"), end=ts("2024-01-15 09:25:03"),
@@ -277,7 +283,7 @@ def test_기간을_두고_흩어진_실패는_경고하지_않는다():
         (ts("2024-03-20 14:00:00"), '10.0.0.5'),
         (ts("2024-07-02 21:00:00"), '10.0.0.5'),
     ]
-    assert detect_bruteforce(events, threshold=3, window_minutes=10) == []
+    assert detect_bruteforce(events, TEST_TIER) == []
 
 
 def test_창_경계에_걸친_실패는_창_안으로_인정한다():
@@ -287,7 +293,7 @@ def test_창_경계에_걸친_실패는_창_안으로_인정한다():
         (ts("2024-01-15 09:05:00"), '10.0.0.5'),
         (ts("2024-01-15 09:10:00"), '10.0.0.5'),
     ]
-    assert len(detect_bruteforce(events, threshold=3, window_minutes=10)) == 1
+    assert len(detect_bruteforce(events, TEST_TIER)) == 1
 
 
 def test_창을_벗어난_실패는_세지_않는다():
@@ -297,22 +303,22 @@ def test_창을_벗어난_실패는_세지_않는다():
         (ts("2024-01-15 09:06:00"), '10.0.0.5'),
         (ts("2024-01-15 09:12:00"), '10.0.0.5'),
     ]
-    assert detect_bruteforce(events, threshold=3, window_minutes=10) == []
+    assert detect_bruteforce(events, TEST_TIER) == []
 
 
 def test_기준치보다_한_번_적으면_경고하지_않는다():
     events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 4)]
-    assert detect_bruteforce(events, threshold=4, window_minutes=10) == []
+    assert detect_bruteforce(events, replace(TEST_TIER, threshold=4)) == []
 
 
 def test_기준치와_정확히_같으면_경고한다():
     events = [(ts(f"2024-01-15 09:25:0{i}"), '10.0.0.5') for i in range(1, 5)]
-    assert len(detect_bruteforce(events, threshold=4, window_minutes=10)) == 1
+    assert len(detect_bruteforce(events, replace(TEST_TIER, threshold=4))) == 1
 
 
 def test_시각을_못_읽은_줄은_시간_창_판정에서_제외한다():
     events = [(None, '10.0.0.5')] * 10
-    assert detect_bruteforce(events, threshold=3, window_minutes=10) == []
+    assert detect_bruteforce(events, TEST_TIER) == []
 
 
 def test_로그_순서가_뒤바뀌어_있어도_판정한다():
@@ -321,7 +327,7 @@ def test_로그_순서가_뒤바뀌어_있어도_판정한다():
         (ts("2024-01-15 09:25:01"), '10.0.0.5'),
         (ts("2024-01-15 09:25:02"), '10.0.0.5'),
     ]
-    assert len(detect_bruteforce(events, threshold=3, window_minutes=10)) == 1
+    assert len(detect_bruteforce(events, TEST_TIER)) == 1
 
 
 def test_다른_IP의_실패는_합산하지_않는다():
@@ -330,11 +336,11 @@ def test_다른_IP의_실패는_합산하지_않는다():
         (ts("2024-01-15 09:25:02"), '10.0.0.6'),
         (ts("2024-01-15 09:25:03"), '10.0.0.7'),
     ]
-    assert detect_bruteforce(events, threshold=3, window_minutes=10) == []
+    assert detect_bruteforce(events, TEST_TIER) == []
 
 
 def test_집계_결과가_비어_있으면_경고하지_않는다():
-    assert detect_bruteforce([]) == []
+    assert detect_bruteforce([], TEST_TIER) == []
 
 
 # ─────────────────────────────────────────
@@ -384,18 +390,18 @@ def test_보고서_본문_형식():
 
 
 # ─────────────────────────────────────────
-# 9. analyze: CLI 와 웹앱이 함께 쓰는 분석 한 번에 하기
+# 9. analyze: 분석 한 번에 하기 (등급별 판정과 같은 IP 묶기 포함)
 # ─────────────────────────────────────────
 
 def test_analyze는_탐지_결과를_한_번에_돌려준다():
-    lines = burst('198.51.100.7', FAST_ATTACK_FAILS) + [
+    lines = burst('198.51.100.7', FAST_TIER.threshold) + [
         "2024-01-15 10:00:00 FILE_ACCESS file=/etc/shadow user=admin\n",
         "LOGIN_FAIL user=root ip=10.0.0.9\n",   # 시각 없는 줄
     ]
 
     result = analyze(lines)
 
-    assert result.ip_count == {'198.51.100.7': FAST_ATTACK_FAILS, '10.0.0.9': 1}
+    assert result.ip_count == {'198.51.100.7': FAST_TIER.threshold, '10.0.0.9': 1}
     assert any(a.tier == '급속' and a.ip == '198.51.100.7' for a in result.brute_alerts)
     assert len(result.file_alerts) == 1
     assert result.undated_count == 1
@@ -405,25 +411,39 @@ def test_analyze는_탐지_결과를_한_번에_돌려준다():
 def test_analyze는_기준치를_바꿀_수_있다():
     lines = burst('10.0.0.5', 3)
     assert analyze(lines).alerts == []
-    assert analyze(lines, slow_threshold=3).brute_alerts != []
+    assert analyze(lines, tiers=(FAST_TIER, replace(SLOW_TIER, threshold=3))).brute_alerts != []
+
+
+def test_같은_IP는_앞쪽_등급_경고만_남는다():
+    # 등급 순서가 곧 심각도다. 등급이 몇 개든 같은 IP는 가장 앞 등급 하나로 묶는다.
+    lines = burst('10.0.0.5', 5)
+    tiers = (
+        DetectionTier('심각', threshold=5, window_minutes=1),
+        DetectionTier('주의', threshold=3, window_minutes=10),
+        DetectionTier('관찰', threshold=2, window_minutes=60),
+    )
+
+    alerts = analyze(lines, tiers=tiers).brute_alerts
+
+    assert [(a.ip, a.tier) for a in alerts] == [('10.0.0.5', '심각')]
 
 
 def test_같은_IP가_두_단계에_모두_걸리면_급속_경고_하나만_남긴다():
     # 10분에 40회면 24시간에 8회도 반드시 넘으므로, 묶지 않으면 같은 공격에 경고가 2개 나온다
-    result = analyze(burst('198.51.100.7', FAST_ATTACK_FAILS))
+    result = analyze(burst('198.51.100.7', FAST_TIER.threshold))
 
     assert [(a.ip, a.tier) for a in result.brute_alerts] == [('198.51.100.7', '급속')]
 
 
 def test_누적에만_걸린_IP는_누적_경고가_남는다():
     # 30분 간격으로 8회: 10분 창에는 1회씩만 들어가 급속 기준에 못 미친다
-    result = analyze(spread('203.0.113.7', SLOW_ATTACK_FAILS, every_minutes=30))
+    result = analyze(spread('203.0.113.7', SLOW_TIER.threshold, every_minutes=30))
 
     assert [(a.ip, a.tier) for a in result.brute_alerts] == [('203.0.113.7', '누적')]
 
 
 def test_서로_다른_IP는_각자_경고를_받는다():
-    lines = burst('198.51.100.7', FAST_ATTACK_FAILS) + spread('203.0.113.7', SLOW_ATTACK_FAILS, 30)
+    lines = burst('198.51.100.7', FAST_TIER.threshold) + spread('203.0.113.7', SLOW_TIER.threshold, 30)
 
     alerts = analyze(lines).brute_alerts
 
@@ -438,11 +458,47 @@ def test_analyze_보고서는_기존_보고서_형식과_같다():
 
 
 # ─────────────────────────────────────────
-# 10. 기본 설정값
+# 10. 탐지 등급과 기본 설정값
 # ─────────────────────────────────────────
 
-def test_기본_설정값이_정의되어_있다():
-    assert FAST_ATTACK_FAILS == 40
-    assert FAST_ATTACK_WINDOW_MINUTES == 10
-    assert SLOW_ATTACK_FAILS == 8
-    assert SLOW_ATTACK_WINDOW_MINUTES == 1440
+def test_기본_등급은_급속_다음_누적_순서다():
+    assert DEFAULT_TIERS == (
+        DetectionTier('급속', threshold=40, window_minutes=10),
+        DetectionTier('누적', threshold=8, window_minutes=1440),
+    )
+
+
+@pytest.mark.parametrize("threshold, window", [(0, 10), (-1, 10), (3, 0), (3, -5)])
+def test_기준_횟수나_시간_창이_1보다_작은_등급은_만들_수_없다(threshold, window):
+    # 기준 0회면 실패 한 번에도 경고하고, 창이 음수면 아무것도 탐지하지 못한다.
+    # CLI 를 거치지 않고 analyze() 를 직접 불러도 이런 값은 들어갈 수 없어야 한다.
+    with pytest.raises(ValueError):
+        DetectionTier('시험', threshold=threshold, window_minutes=window)
+
+
+def test_등급을_바꿔_만들어도_같은_검사를_거친다():
+    with pytest.raises(ValueError):
+        replace(FAST_TIER, threshold=0)
+
+
+# ─────────────────────────────────────────
+# 11. save_report: 보고서 파일 저장
+# ─────────────────────────────────────────
+
+def test_보고서_파일에_제목_분석시각_본문을_쓴다(tmp_path, capsys):
+    out = tmp_path / "r.txt"
+
+    save_report("본문", str(out))
+
+    lines = out.read_text(encoding='utf-8').splitlines()
+    assert lines[0] == "=== 로그 분석 보고서 ==="
+    assert lines[1].startswith("분석 시각: ")
+    assert lines[2:] == ["", "본문"]
+    # 저장 완료 안내는 main() 이 한다
+    assert capsys.readouterr().out == ""
+
+
+def test_저장할_수_없으면_예외를_올려보내고_프로그램을_끝내지_않는다(tmp_path, capsys):
+    with pytest.raises(OSError):
+        save_report("본문", str(tmp_path / "no_such_dir" / "r.txt"))
+    assert capsys.readouterr().out == ""

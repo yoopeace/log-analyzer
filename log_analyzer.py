@@ -2,7 +2,7 @@ import argparse
 import re
 import sys
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,13 +11,6 @@ from pathlib import Path
 # 틀린 정상 사용자(5+5회)는 경고될 수 있음을 감수하고 정했다 (README 알려진 한계).
 NORMAL_MAX_FAILS = 5
 
-# 급속: 짧은 시간에 몰아서 시도하는 공격
-FAST_ATTACK_FAILS = 40
-FAST_ATTACK_WINDOW_MINUTES = 10
-# 누적: 하루 동안 쌓인 실패 횟수로 보는 공격 (속도와 관계없이 횟수 기준)
-# 상수·옵션 이름의 slow 는 예전 등급 이름 '완속'에서 왔다.
-SLOW_ATTACK_FAILS = 8
-SLOW_ATTACK_WINDOW_MINUTES = 1440  # 24시간
 SENSITIVE_FILES = ['/etc/passwd', '/etc/shadow', '/etc/sudoers']
 
 # 종료 코드: 0 탐지 없음 / 1 탐지됨 / 2 입력 오류
@@ -40,14 +33,9 @@ def open_log(filename):
     # utf-8-sig: 윈도우 메모장 등이 붙이는 BOM(\ufeff)을 떼고 읽는다.
     #            떼지 않으면 첫 줄 맨 앞에 보이지 않는 글자가 남아 시각을 못 읽는다.
     # errors='replace': UTF-8이 아닌 바이트가 섞여 있어도 분석을 계속한다
-    try:
-        return open(filename, 'r', encoding='utf-8-sig', errors='replace')
-    except FileNotFoundError:
-        print(f"❌ 로그 파일을 찾을 수 없습니다: {filename}")
-        sys.exit(EXIT_INPUT_ERROR)
-    except PermissionError:
-        print(f"❌ 로그 파일을 읽을 권한이 없습니다: {filename}")
-        sys.exit(EXIT_INPUT_ERROR)
+    # 열 수 없으면 예외(FileNotFoundError 등)를 그대로 올려보낸다.
+    # 안내문과 종료 코드는 main() 이 정한다.
+    return open(filename, 'r', encoding='utf-8-sig', errors='replace')
 
 
 # 줄 앞머리의 '2024-01-15 09:25:01' 또는 '2024-01-15T09:25:01' 형태
@@ -70,6 +58,32 @@ def extract_field(line, field):
     pattern = rf'(?<!\S){re.escape(field)}=(\S+)'
     match = re.search(pattern, line)
     return match.group(1) if match else None
+
+
+@dataclass(frozen=True)
+class DetectionTier:
+    """브루트포스 탐지 등급 하나: 시간 창 안에서 기준 횟수 이상 실패하면 경고한다.
+
+    기준 횟수·시간 창·이름을 한 값으로 묶어, 어디서 만들든 같은 검사를 거치게 한다.
+    기준이 0회면 실패 한 번에도 경고하고, 창이 0 이하면 아무것도 탐지하지 못한다.
+    """
+    name: str             # 경고에 붙는 등급 이름 ('급속' / '누적')
+    threshold: int        # 기준 실패 횟수
+    window_minutes: int   # 시간 창 (분)
+
+    def __post_init__(self):
+        if self.threshold < 1:
+            raise ValueError(f"{self.name} 탐지 기준 횟수는 1 이상이어야 합니다: {self.threshold}")
+        if self.window_minutes < 1:
+            raise ValueError(f"{self.name} 탐지 시간 창은 1분 이상이어야 합니다: {self.window_minutes}")
+
+# 급속: 짧은 시간에 몰아서 시도하는 공격
+FAST_TIER = DetectionTier('급속', threshold=40, window_minutes=10)
+# 누적: 하루 동안 쌓인 실패 횟수로 보는 공격 (속도와 관계없이 횟수 기준)
+# 이름의 SLOW 와 옵션 이름 --slow-* 는 예전 등급 이름 '완속'에서 왔다.
+SLOW_TIER = DetectionTier('누적', threshold=8, window_minutes=1440)   # 24시간
+# 앞에 있을수록 심한 등급이다. 같은 IP가 여러 등급에 걸리면 가장 앞 등급만 남긴다.
+DEFAULT_TIERS = (FAST_TIER, SLOW_TIER)
 
 
 # 경고는 문장이 아니라 데이터로 다룬다. 문장은 화면·보고서에 찍는 순간에만 만든다.
@@ -136,14 +150,14 @@ def count_undated(fail_events):
     """시각을 읽을 수 없어 시간 창 판정에서 빠지는 건수."""
     return sum(1 for timestamp, _ in fail_events if timestamp is None)
 
-def detect_bruteforce(fail_events, threshold=FAST_ATTACK_FAILS, window_minutes=FAST_ATTACK_WINDOW_MINUTES, tier=''):
-    """같은 IP가 시간 창 안에서 기준치 이상 실패했는지 판정한다.
+def detect_bruteforce(fail_events, tier):
+    """같은 IP가 등급의 시간 창 안에서 기준 횟수 이상 실패했는지 판정한다.
 
     브루트포스는 '짧은 시간에 몰아서 시도한다'는 것이 본질이므로
     전체 기간의 누적 횟수가 아니라 창 안의 최다 횟수를 기준으로 삼는다.
     시각을 읽을 수 없는 이벤트는 창 판정에 쓸 수 없어 제외한다.
     """
-    window = timedelta(minutes=window_minutes)
+    window = timedelta(minutes=tier.window_minutes)
 
     times_by_ip = {}
     for timestamp, ip in fail_events:
@@ -167,9 +181,9 @@ def detect_bruteforce(fail_events, threshold=FAST_ATTACK_FAILS, window_minutes=F
                 peak_count = len(recent)
                 peak_range = (recent[0], current)
 
-        if peak_count >= threshold:
+        if peak_count >= tier.threshold:
             start, end = peak_range
-            alerts.append(BruteforceAlert(ip, tier, window_minutes, peak_count, start, end))
+            alerts.append(BruteforceAlert(ip, tier.name, tier.window_minutes, peak_count, start, end))
     return alerts
 
 def format_ip_counts(ip_count):
@@ -200,7 +214,7 @@ def build_report_body(ip_count, brute_alerts, file_alerts, undated_count=0):
 
 @dataclass
 class Analysis:
-    """분석 결과 한 묶음. CLI 와 웹앱이 같은 결과를 쓰도록 analyze() 가 만든다."""
+    """분석 결과 한 묶음. analyze() 가 만든다."""
     ip_count: dict
     brute_alerts: list
     file_alerts: list
@@ -214,71 +228,97 @@ class Analysis:
         return build_report_body(self.ip_count, self.brute_alerts,
                                  self.file_alerts, self.undated_count)
 
-def analyze(lines,
-            fast_threshold=FAST_ATTACK_FAILS, fast_window=FAST_ATTACK_WINDOW_MINUTES,
-            slow_threshold=SLOW_ATTACK_FAILS, slow_window=SLOW_ATTACK_WINDOW_MINUTES):
+def analyze(lines, tiers=DEFAULT_TIERS):
     """로그 줄들을 받아 탐지를 모두 수행한다.
 
-    분석 흐름을 이 함수 한 곳에만 둔다. CLI 와 웹앱이 각자 흐름을 복사해 두면
-    한쪽만 고쳐졌을 때 두 결과가 서로 달라진다.
+    분석 흐름을 이 함수 한 곳에만 둔다. 호출하는 쪽이 흐름을 복사해 두면
+    한쪽만 고쳐졌을 때 결과가 서로 달라진다.
+    tiers 는 심한 등급부터 나열한다 (기본: 급속, 누적).
     """
     fail_events, file_alerts = scan_log(lines)
-    fast = detect_bruteforce(fail_events, fast_threshold, fast_window, tier='급속')
-    slow = detect_bruteforce(fail_events, slow_threshold, slow_window, tier='누적')
 
-    # 같은 IP가 두 단계에 모두 걸리면 더 심한 급속 경고 하나만 남긴다.
+    # 같은 IP가 여러 등급에 걸리면 가장 앞(가장 심한) 등급 경고 하나만 남긴다.
     # 급속 기준(10분 40회)을 넘으면 누적 기준(24시간 8회)도 반드시 넘으므로,
     # 묶지 않으면 공격 하나에 경고가 2개씩 나와 건수가 부풀려진다.
-    fast_ips = {alert.ip for alert in fast}
-    slow_only = [alert for alert in slow if alert.ip not in fast_ips]
+    brute_alerts = []
+    alerted_ips = set()
+    for tier in tiers:
+        for alert in detect_bruteforce(fail_events, tier):
+            if alert.ip not in alerted_ips:
+                brute_alerts.append(alert)
+                alerted_ips.add(alert.ip)
 
-    return Analysis(count_by_ip(fail_events), fast + slow_only, file_alerts,
+    return Analysis(count_by_ip(fail_events), brute_alerts, file_alerts,
                     count_undated(fail_events))
 
 def save_report(body, output_file):
+    """보고서 파일을 쓴다. 쓸 수 없으면 OSError 를 그대로 올려보낸다."""
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    try:
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(f"=== 로그 분석 보고서 ===\n분석 시각: {now}\n\n{body}\n")
-    except OSError as e:
-        print(f"❌ 보고서를 저장할 수 없습니다: {output_file} → {e}")
-        sys.exit(EXIT_INPUT_ERROR)
-    print(f"보고서 저장 완료: {output_file}")
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(f"=== 로그 분석 보고서 ===\n분석 시각: {now}\n\n{body}\n")
 
-def main():
+
+def positive_int(text):
+    """탐지 기준 옵션 값: 1 이상의 정수만 받는다."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"1 이상의 정수여야 합니다 (입력값: {text})")
+    return value
+
+def build_parser():
     parser = argparse.ArgumentParser(description='로그 분석 도구')
     parser.add_argument('logfile', help='분석할 로그 파일 경로')
     parser.add_argument('--output', default='report.txt', help='보고서 저장 파일명')
-    parser.add_argument('--fast-threshold', type=int, default=FAST_ATTACK_FAILS,
-                        help=f'급속 탐지 기준 실패 횟수 (기본 {FAST_ATTACK_FAILS}회)')
-    parser.add_argument('--fast-window', type=int, default=FAST_ATTACK_WINDOW_MINUTES,
-                        help=f'급속 탐지 시간 창 (기본 {FAST_ATTACK_WINDOW_MINUTES}분)')
-    parser.add_argument('--slow-threshold', type=int, default=SLOW_ATTACK_FAILS,
-                        help=f'누적 탐지 기준 실패 횟수 (기본 {SLOW_ATTACK_FAILS}회)')
-    parser.add_argument('--slow-window', type=int, default=SLOW_ATTACK_WINDOW_MINUTES,
-                        help=f'누적 탐지 시간 창 (기본 {SLOW_ATTACK_WINDOW_MINUTES}분)')
-    args = parser.parse_args()
+    parser.add_argument('--fast-threshold', type=positive_int, default=FAST_TIER.threshold,
+                        help=f'급속 탐지 기준 실패 횟수 (기본 {FAST_TIER.threshold}회)')
+    parser.add_argument('--fast-window', type=positive_int, default=FAST_TIER.window_minutes,
+                        help=f'급속 탐지 시간 창 (기본 {FAST_TIER.window_minutes}분)')
+    parser.add_argument('--slow-threshold', type=positive_int, default=SLOW_TIER.threshold,
+                        help=f'누적 탐지 기준 실패 횟수 (기본 {SLOW_TIER.threshold}회)')
+    parser.add_argument('--slow-window', type=positive_int, default=SLOW_TIER.window_minutes,
+                        help=f'누적 탐지 시간 창 (기본 {SLOW_TIER.window_minutes}분)')
+    return parser
 
-    if args.fast_threshold < 1:
-        parser.error("--fast-threshold 는 1 이상이어야 합니다.")
-    if args.fast_window < 1:
-        parser.error("--fast-window 는 1 이상이어야 합니다.")
-    if args.slow_threshold < 1:
-        parser.error("--slow-threshold 는 1 이상이어야 합니다.")
-    if args.slow_window < 1:
-        parser.error("--slow-window 는 1 이상이어야 합니다.")
+def main(argv=None):
+    """명령줄 진입점. argv 를 주지 않으면 실제 명령줄 인자를 읽는다.
+
+    화면 안내문과 종료 코드는 모두 이 함수가 정한다.
+    아래 함수들은 실패를 예외로 알리기만 하고 프로그램을 끝내지 않는다.
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     # 분석 대상 로그를 보고서로 덮어쓰면 원본이 복구 불가능하게 사라진다
     if Path(args.logfile).resolve() == Path(args.output).resolve():
         parser.error("입력 로그와 출력 보고서는 서로 다른 파일이어야 합니다.")
 
-    with open_log(args.logfile) as f:
-        result = analyze(f, args.fast_threshold, args.fast_window,
-                         args.slow_threshold, args.slow_window)
+    tiers = (
+        replace(FAST_TIER, threshold=args.fast_threshold, window_minutes=args.fast_window),
+        replace(SLOW_TIER, threshold=args.slow_threshold, window_minutes=args.slow_window),
+    )
+
+    try:
+        log = open_log(args.logfile)
+    except FileNotFoundError:
+        print(f"❌ 로그 파일을 찾을 수 없습니다: {args.logfile}")
+        return EXIT_INPUT_ERROR
+    except PermissionError:
+        print(f"❌ 로그 파일을 읽을 권한이 없습니다: {args.logfile}")
+        return EXIT_INPUT_ERROR
+    with log:
+        result = analyze(log, tiers)
 
     body = result.report()
     print(body)
-    save_report(body, args.output)
+    try:
+        save_report(body, args.output)
+    except OSError as e:
+        print(f"❌ 보고서를 저장할 수 없습니다: {args.output} → {e}")
+        return EXIT_INPUT_ERROR
+    print(f"보고서 저장 완료: {args.output}")
 
     # 탐지 결과를 종료 코드로 알려 자동화 도구가 판단할 수 있게 한다
     return EXIT_DETECTED if result.alerts else EXIT_CLEAN

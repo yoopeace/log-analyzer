@@ -7,6 +7,12 @@
 > (실제 구성은 `experiments/bruteforce-threshold/README.md` 참고).
 > 등급 이름 '완속'은 '누적'으로 바꿨다. 실제 판정 기준이 속도가 아니라 24시간 동안 쌓인 횟수라,
 > 5분 만에 8회 실패한 IP도 '완속'으로 표시되는 등 이름과 판정이 맞지 않았기 때문이다.
+>
+> **2026-11-11 변경:** 아래의 상수 4개(`FAST_ATTACK_FAILS` 등)와 `detect_bruteforce(fail_events,
+> threshold, window_minutes)` 시그니처는 없어졌다. 기준 횟수·시간 창·이름을 `DetectionTier` 한 값으로
+> 묶고(`FAST_TIER`, `SLOW_TIER`, `DEFAULT_TIERS`), 1 미만 값은 등급을 만들 때 거부한다.
+> `analyze(lines, tiers)`는 등급 순서를 심각도로 보고 같은 IP는 가장 앞 등급 경고만 남긴다.
+> 옵션 이름 `--fast-*`, `--slow-*`와 기본값은 그대로다.
 
 ## 배경
 
