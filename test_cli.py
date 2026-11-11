@@ -124,6 +124,30 @@ def test_로그_파일을_읽을_권한이_없으면_종료코드_2(tmp_path, ca
     assert capsys.readouterr().out == f"❌ 로그 파일을 읽을 권한이 없습니다: {log}\n"
 
 
+def test_로그_경로가_폴더면_종료코드_2와_안내문(tmp_path, capsys):
+    folder = tmp_path / "logs"
+    folder.mkdir()
+
+    assert analyze_cli(tmp_path, folder) == 2
+    assert capsys.readouterr().out == f"❌ 로그 파일이 아니라 폴더입니다: {folder}\n"
+
+
+def test_그_밖의_이유로_로그를_열_수_없어도_종료코드_2와_안내문(tmp_path, capsys, monkeypatch):
+    # 위에서 따로 안내하는 경우 말고도 운영체제가 파일 열기를 거부할 수 있다
+    # (예: 열린 파일 수 한도 초과). 이때도 오류 추적 화면 대신 안내문으로 끝나야 한다.
+    import log_analyzer
+
+    def refuse(filename):
+        raise OSError(24, "Too many open files")
+    monkeypatch.setattr(log_analyzer, "open_log", refuse)
+    log = write_log(tmp_path, ONE_FAIL)
+
+    assert analyze_cli(tmp_path, log) == 2
+    assert capsys.readouterr().out == (
+        f"❌ 로그 파일을 열 수 없습니다: {log} → [Errno 24] Too many open files\n"
+    )
+
+
 def test_보고서를_저장할_수_없으면_결과는_보여주고_종료코드_2(tmp_path, capsys):
     log = write_log(tmp_path, ONE_FAIL)
     output = tmp_path / "no_such_dir" / "r.txt"

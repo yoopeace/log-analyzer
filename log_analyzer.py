@@ -308,6 +308,13 @@ def main(argv=None):
     except PermissionError:
         print(f"❌ 로그 파일을 읽을 권한이 없습니다: {args.logfile}")
         return EXIT_INPUT_ERROR
+    except IsADirectoryError:
+        print(f"❌ 로그 파일이 아니라 폴더입니다: {args.logfile}")
+        return EXIT_INPUT_ERROR
+    except OSError as e:
+        # 위에서 따로 안내하지 않는 그 밖의 열기 실패 (열린 파일 수 한도 등)
+        print(f"❌ 로그 파일을 열 수 없습니다: {args.logfile} → {e}")
+        return EXIT_INPUT_ERROR
     with log:
         result = analyze(log, tiers)
 
