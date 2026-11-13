@@ -253,6 +253,23 @@ class Analysis:
         return build_report_body(self.ip_count, self.brute_alerts,
                                  self.file_alerts, self.undated_count)
 
+def judge_failures(fail_events, tiers=DEFAULT_TIERS):
+    """(시각, 키) 실패 이벤트 목록을 등급별로 판정한다. 키는 IP 가 아니어도 된다.
+
+    줄 단위 로그(analyze)와 다른 입력(예: 윈도우 이벤트 로그)이 같은 판정을 쓰도록 따로 둔다.
+    같은 키가 여러 등급에 걸리면 가장 앞(가장 심한) 등급 경고 하나만 남긴다.
+    급속 기준(10분 40회)을 넘으면 누적 기준(24시간 8회)도 반드시 넘으므로,
+    묶지 않으면 공격 하나에 경고가 2개씩 나와 건수가 부풀려진다.
+    """
+    alerts = []
+    alerted = set()
+    for tier in tiers:
+        for alert in detect_bruteforce(fail_events, tier):
+            if alert.ip not in alerted:
+                alerts.append(alert)
+                alerted.add(alert.ip)
+    return alerts
+
 def analyze(lines, tiers=DEFAULT_TIERS):
     """로그 줄들을 받아 탐지를 모두 수행한다.
 
@@ -261,19 +278,7 @@ def analyze(lines, tiers=DEFAULT_TIERS):
     tiers 는 심한 등급부터 나열한다 (기본: 급속, 누적).
     """
     fail_events, file_alerts = scan_log(lines)
-
-    # 같은 IP가 여러 등급에 걸리면 가장 앞(가장 심한) 등급 경고 하나만 남긴다.
-    # 급속 기준(10분 40회)을 넘으면 누적 기준(24시간 8회)도 반드시 넘으므로,
-    # 묶지 않으면 공격 하나에 경고가 2개씩 나와 건수가 부풀려진다.
-    brute_alerts = []
-    alerted_ips = set()
-    for tier in tiers:
-        for alert in detect_bruteforce(fail_events, tier):
-            if alert.ip not in alerted_ips:
-                brute_alerts.append(alert)
-                alerted_ips.add(alert.ip)
-
-    return Analysis(count_by_ip(fail_events), brute_alerts, file_alerts,
+    return Analysis(count_by_ip(fail_events), judge_failures(fail_events, tiers), file_alerts,
                     count_undated(fail_events))
 
 def save_report(body, output_file):

@@ -28,6 +28,7 @@ from log_analyzer import (
     extract_field,
     format_bruteforce,
     format_file_access,
+    judge_failures,
     open_log,
     parse_timestamp,
     sanitize_line,
@@ -494,6 +495,20 @@ def test_서로_다른_IP는_각자_경고를_받는다():
 
     assert {a.ip: a.tier for a in alerts} == {'198.51.100.7': '급속', '203.0.113.7': '누적'}
     assert len(alerts) == 2
+
+
+def test_판정은_실패_이벤트_목록만으로도_할_수_있다():
+    # 윈도우 이벤트처럼 줄이 아닌 곳에서 온 실패도 같은 기준으로 판정한다.
+    # 묶는 키는 IP 가 아니어도 된다 (예: PC 앞에서 시도한 실패는 계정별로 센다).
+    events = [(ts(f"2024-01-15 09:00:{i:02d}"), '계정 admin') for i in range(8)]
+    alerts = judge_failures(events)
+    assert [(a.ip, a.tier) for a in alerts] == [('계정 admin', '누적')]
+
+
+def test_analyze와_judge_failures는_같은_판정을_한다():
+    lines = burst('198.51.100.7', FAST_TIER.threshold) + spread('203.0.113.7', SLOW_TIER.threshold, 30)
+    fail_events, _ = scan_log(iter(lines))
+    assert analyze(lines).brute_alerts == judge_failures(fail_events)
 
 
 def test_analyze_보고서는_기존_보고서_형식과_같다():
