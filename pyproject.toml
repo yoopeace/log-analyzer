@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "log-analyzer"
+version = "1.0.0"
+description = "시간 창 기반 브루트포스·민감파일 접근 탐지 로그 분석 도구"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+
+[tool.setuptools]
+py-modules = ["log_analyzer"]

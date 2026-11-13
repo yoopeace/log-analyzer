@@ -25,6 +25,7 @@ Python으로 개발한 보안 로그 분석 도구.
 | `report.txt` | `demo_attack.log` 분석 보고서 예시 (기본 저장 위치라 옵션 없이 실행하면 새 결과로 덮어써짐) |
 | `test_log_analyzer.py`, `test_cli.py` | 테스트 |
 | `GLOSSARY.md` | 용어 정리 (탐지 등급, 급속, 누적, 시간 창 등) |
+| `pyproject.toml` | 패키지 설정. 다른 프로그램에서 `pip install "log-analyzer @ git+https://github.com/yoopeace/log-analyzer@v1.0.0"`로 불러 쓸 수 있음 |
 | `experiments/` | 지난 실험 기록: 브루트포스 임계값 실험, AI 해설 실험 ([목록](experiments/README.md)) |
 
 ## 사용법
